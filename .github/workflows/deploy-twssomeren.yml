@@ -1,4 +1,4 @@
-name: Deploy TWSSomeren
+name: Deploy TwoSOMEren
 
 on:
   repository_dispatch:
@@ -35,8 +35,14 @@ jobs:
           username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
           password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
 
+      - name: Set up Docker Compose
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker-compose-plugin
+          docker compose version
+
       - name: Build Docker images
-        run: docker-compose -f ./docker/docker-compose-build.yml build
+        run: docker compose -f ./docker/docker-compose-build.yml build
 
       - name: Tag and Push Docker images
         run: |
