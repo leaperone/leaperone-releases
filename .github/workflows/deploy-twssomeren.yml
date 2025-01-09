@@ -64,31 +64,12 @@ jobs:
           script: ${{ secrets.DEPLOY_TWOSOMEREN_SCRIPT }}
 
       - name: Notify Feishu
-        uses: foxundermoon/feishu-action@v2
         if: always()
+        uses: ./.github/workflows/feishu-notification.yml
         with:
-          url: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          msg_type: interactive
-          content: |
-            header:
-              title:
-                content: "${{ job.status == 'success' && '🚀 部署成功啦！' || '❌ 部署失败了！' }}"
-                tag: plain_text
-            elements:
-            - tag: div
-              text:
-                content: "🌟 部署详情\n\n**分支**：${{ github.event.client_payload.ref }}\n**构建编号**：#${{ github.run_number }}\n**提交信息**：${{ github.event.client_payload.message }}\n**提交者**：${{ github.event.client_payload.author }}\n**构建时间**：${{ env.BUILD_DATE }}"
-                tag: lark_md
-            - tag: hr
-            - tag: div
-              text:
-                content: "${{ job.status == 'success' && '✨ 部署已经完成，快去看看新功能吧！' || '😱 糟糕！部署出现了问题，请及时检查！' }}"
-                tag: lark_md
-            - tag: action
-              actions:
-                - tag: button
-                  text:
-                    content: "查看详情 👉"
-                    tag: plain_text
-                  url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-                  type: "primary"
+          status: ${{ job.status }}
+          ref: ${{ github.event.client_payload.ref }}
+          run_number: ${{ github.run_number }}
+          message: ${{ github.event.client_payload.message }}
+          author: ${{ github.event.client_payload.author }}
+          run_id: ${{ github.run_id }}

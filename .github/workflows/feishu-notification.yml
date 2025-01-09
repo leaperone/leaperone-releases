@@ -1,0 +1,87 @@
+name: Feishu Notification
+
+on:
+  workflow_call:
+    inputs:
+      status:
+        required: true
+        type: string
+      ref:
+        required: true
+        type: string
+      run_number:
+        required: true
+        type: string
+      message:
+        required: false
+        type: string
+      author:
+        required: false
+        type: string
+      run_id:
+        required: true
+        type: string
+    secrets:
+      FEISHU_WEBHOOK_URL:
+        required: true
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Feishu Notification
+        run: |
+          # 构建飞书消息内容
+          MESSAGE_CONTENT=$(cat << EOF
+          {
+            "msg_type": "interactive",
+            "card": {
+              "header": {
+                "title": {
+                  "content": "${{ inputs.status == 'success' && '🚀 部署成功啦！' || '❌ 部署失败了！' }}",
+                  "tag": "plain_text"
+                }
+              },
+              "elements": [
+                {
+                  "tag": "div",
+                  "text": {
+                    "content": "🌟 部署详情\n\n**分支**：${{ inputs.ref }}\n**构建编号**：#${{ inputs.run_number }}\n**提交信息**：${{ inputs.message }}\n**提交者**：${{ inputs.author }}",
+                    "tag": "lark_md"
+                  }
+                },
+                {
+                  "tag": "hr"
+                },
+                {
+                  "tag": "div",
+                  "text": {
+                    "content": "${{ inputs.status == 'success' && '✨ 部署已经完成，快去看看新功能吧！' || '😱 糟糕！部署出现了问题，请及时检查！' }}",
+                    "tag": "lark_md"
+                  }
+                },
+                {
+                  "tag": "action",
+                  "actions": [
+                    {
+                      "tag": "button",
+                      "text": {
+                        "content": "查看详情 👉",
+                        "tag": "plain_text"
+                      },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.run_id }}",
+                      "type": "primary"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+          EOF
+          )
+
+          # 使用 curl 发送请求
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -d "$MESSAGE_CONTENT" \
+            ${{ secrets.FEISHU_WEBHOOK_URL }} 
