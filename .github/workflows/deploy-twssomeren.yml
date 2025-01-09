@@ -68,7 +68,7 @@ jobs:
         if: always()
         with:
           url: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          msg_type: card
+          msg_type: interactive
           content: |
             header:
               title:
