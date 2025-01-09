@@ -4,11 +4,6 @@ on:
   repository_dispatch:
     types: [deploy-twssomeren]
 
-
-env:
-  DOCKERHUB: registry.cn-guangzhou.aliyuncs.com/leaperone/2someone
-  BUILD_DATE: ${{ format('YYYYMMDD', github.event.client_payload.timestamp || github.event.timestamp) }}
-
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -45,8 +40,7 @@ jobs:
 
       - name: Tag and Push Docker images
         run: |
-          docker tag ${DOCKERHUB}:web-${GITHUB_REF_NAME}-latest-${GITHUB_RUN_NUMBER} ${DOCKERHUB}:web-${GITHUB_REF_NAME}-latest
-          docker push ${DOCKERHUB}:web-${GITHUB_REF_NAME}-latest
+          docker push registry.cn-guangzhou.aliyuncs.com/leaperone/2someren:web-main-latest
 
       - name: Run Database Migrations
         if: github.ref == 'refs/heads/main'
@@ -54,7 +48,7 @@ jobs:
         with:
           node-version: '20'
       - run: |
-          npm install -g prisma --registry https://registry.npmmirror.com
+          npm install -g prisma
           export TWOSOMEREN_DATABASE_URL="${{ secrets.TWOSOMEREN_DATABASE_URL }}"
           export TWOSOMEREN_BILI_DATABASE_URL="${{ secrets.TWOSOMEREN_BILI_DATABASE_URL }}"
           sh prisma/migrate_deploy.sh
@@ -77,7 +71,6 @@ jobs:
           msg_type: card
           content: |
             header:
-              template: ${{ job.status == 'success' && 'green' || 'red' }}
               title:
                 content: "${{ job.status == 'success' && '🚀 部署成功啦！' || '❌ 部署失败了！' }}"
                 tag: plain_text
