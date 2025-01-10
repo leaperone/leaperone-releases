@@ -63,6 +63,9 @@ jobs:
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
           script: ${{ secrets.DEPLOY_TWOSOMEREN_SCRIPT }}
 
+      - name: Checkout Notification Repository
+        uses: actions/checkout@v4
+
       - name: Notify Feishu
         if: always()
         uses: ./.github/workflows/feishu-notification.yml
