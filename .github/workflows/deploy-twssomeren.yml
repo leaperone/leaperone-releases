@@ -63,13 +63,16 @@ jobs:
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
           script: ${{ secrets.DEPLOY_TWOSOMEREN_SCRIPT }}
 
-      - name: Notify Feishu
-        if: always()
-        uses: leaper-one/leaperone-releases/.github/workflows/feishu-notification.yml@main
-        with:
-          status: ${{ job.status }}
-          ref: ${{ github.event.client_payload.ref }}
-          run_number: ${{ github.run_number }}
-          message: ${{ github.event.client_payload.message }}
-          author: ${{ github.event.client_payload.author }}
-          run_id: ${{ github.run_id }}
+  notify:
+    needs: build-and-deploy
+    if: always()
+    uses: leaper-one/leaperone-releases/.github/workflows/feishu-notification.yml@main
+    with:
+      status: ${{ needs.build-and-deploy.result }}
+      ref: ${{ github.event.client_payload.ref }}
+      run_number: ${{ github.run_number }}
+      message: ${{ github.event.client_payload.message }}
+      author: ${{ github.event.client_payload.author }}
+      run_id: ${{ github.run_id }}
+    secrets:
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
