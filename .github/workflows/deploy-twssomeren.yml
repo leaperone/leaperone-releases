@@ -69,7 +69,7 @@ jobs:
     uses: leaper-one/leaperone-releases/.github/workflows/feishu-notification.yml@main
     with:
       status: ${{ needs.build-and-deploy.result }}
-      ref: ${{ github.event.client_payload.ref }}
+      ref: leaper-one/2SOMEren@${{ github.event.client_payload.ref }}
       run_number: ${{ github.run_number }}
       message: ${{ github.event.client_payload.message }}
       author: ${{ github.event.client_payload.author }}
