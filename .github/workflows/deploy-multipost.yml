@@ -41,6 +41,16 @@ jobs:
       - name: Tag and Push Docker images
         run: |
           docker push registry.cn-guangzhou.aliyuncs.com/leaperone/multipost:latest
+      
+      - name: Run Database Migrations
+        if: github.ref == 'refs/heads/main'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: |
+          npm install -g prisma
+          export MULTIPOST_DATABASE_URL="${{ secrets.MULTIPOST_DATABASE_URL }}"
+          sh prisma/migrate_deploy.sh
 
       - name: Deploy to Production
         if: github.ref == 'refs/heads/main'
