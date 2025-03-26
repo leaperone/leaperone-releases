@@ -26,7 +26,7 @@ jobs:
       - name: Login to Aliyun Docker Registry
         uses: docker/login-action@v3
         with:
-          registry: registry.cn-hongkong.aliyuncs.com
+          registry: registry.cn-shanghai.aliyuncs.com
           username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
           password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
 
@@ -40,7 +40,7 @@ jobs:
 
       - name: Tag and Push Docker images
         run: |
-          docker push registry.cn-hongkong.aliyuncs.com/leaperone/2someren:web-main-latest
+          docker push registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-main-latest
 
       - name: Run Database Migrations
         if: github.ref == 'refs/heads/main'
