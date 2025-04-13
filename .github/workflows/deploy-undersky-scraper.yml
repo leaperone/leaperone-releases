@@ -50,7 +50,7 @@ jobs:
           username: ${{ secrets.ALIYUN_CN_USERNAME }}
           port: ${{ secrets.ALIYUN_CN_PORT }}
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
-          script: ${{ secrets.DEPLOY_UNDERSKY_SCRAPER_SCRIPT }}
+          script: ${{ secrets.DEPLOY_UNDERSKY_SCRIPT }}
 
   notify:
     needs: build-and-deploy
