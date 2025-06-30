@@ -40,7 +40,8 @@ jobs:
 
       - name: Tag and Push Docker images
         run: |
-          docker push registry.cn-hongkong.aliyuncs.com/leaperone/twosomeone:latest
+          docker push registry.cn-hongkong.aliyuncs.com/leaperone/twosomeone:web-latest
+          docker push registry.cn-hongkong.aliyuncs.com/leaperone/twosomeone:backend-latest
       
       - name: Run Database Migrations
         if: github.ref == 'refs/heads/main'
