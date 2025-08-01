@@ -41,6 +41,7 @@ jobs:
       - name: Tag and Push Docker images
         run: |
           docker push registry.cn-hongkong.aliyuncs.com/leaperone/saraclick:latest
+          docker push registry.cn-hongkong.aliyuncs.com/leaperone/saraclick:backend-latest
       
       - name: Run Database Migrations
         if: github.ref == 'refs/heads/main'
