@@ -66,17 +66,17 @@ jobs:
         run: docker compose -f ./docker/docker-compose-build.yml build
 
       - name: Tag and Push Docker images
-        if: github.ref == 'refs/heads/main'
+        if: steps.set-ref.outputs.ref == 'main' || steps.set-ref.outputs.ref == 'refs/heads/main'
         run: |
           docker push registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-main-latest
 
       - name: Run Database Migrations
-        if: github.ref == 'refs/heads/main'
+        if: steps.set-ref.outputs.ref == 'main' || steps.set-ref.outputs.ref == 'refs/heads/main'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
       - name: Execute Migrations
-        if: github.ref == 'refs/heads/main'
+        if: steps.set-ref.outputs.ref == 'main' || steps.set-ref.outputs.ref == 'refs/heads/main'
         run: |
           npm install -g prisma
           export TWOSOMEREN_DATABASE_URL="${{ secrets.TWOSOMEREN_DATABASE_URL }}"
@@ -84,7 +84,7 @@ jobs:
           sh prisma/migrate_deploy.sh
 
       - name: Deploy to Production
-        if: github.ref == 'refs/heads/main'
+        if: steps.set-ref.outputs.ref == 'main' || steps.set-ref.outputs.ref == 'refs/heads/main'
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.ALIYUN_CN_HOST }}
