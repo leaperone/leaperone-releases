@@ -100,6 +100,8 @@ jobs:
       run_id: ${{ github.run_id }}
       pr_number: ${{ needs.build-and-deploy.outputs.pr_number }}
       repository: leaperone/UnderSky-Scraper
+    secrets:
+      ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
 
   notify:
     needs: build-and-deploy

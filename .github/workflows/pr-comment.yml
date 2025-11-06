@@ -27,6 +27,9 @@ on:
       repository:
         required: false
         type: string
+    secrets:
+      ACCESS_TOKEN:
+        required: true
 
 jobs:
   comment:

@@ -112,6 +112,8 @@ jobs:
       run_id: ${{ github.run_id }}
       pr_number: ${{ needs.build-and-deploy.outputs.pr_number }}
       repository: leaperone/UnderSky
+    secrets:
+      ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
 
   notify:
     needs: build-and-deploy
