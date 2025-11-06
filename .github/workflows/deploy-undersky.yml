@@ -9,12 +9,39 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+      - name: Validate and set ref
+        id: set-ref
+        run: |
+          REF="${{ github.event.client_payload.ref }}"
+          if [ -z "$REF" ]; then
+            echo "ref=main" >> $GITHUB_OUTPUT
+            echo "使用默认分支: main (ref 为空)"
+          elif [[ "$REF" =~ ^([0-9]+)/merge ]]; then
+            # 提取 PR 号，使用 PR 的 merge ref
+            PR_NUMBER="${BASH_REMATCH[1]}"
+            echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
+            echo "检测到 PR merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
+          elif [[ "$REF" == *"/merge"* ]]; then
+            # 其他 merge 格式，尝试提取 PR 号
+            PR_NUMBER=$(echo "$REF" | grep -oE '[0-9]+' | head -1)
+            if [ -n "$PR_NUMBER" ]; then
+              echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
+              echo "检测到 merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
+            else
+              echo "ref=main" >> $GITHUB_OUTPUT
+              echo "无法提取 PR 号，使用默认分支: main (原始 ref: $REF)"
+            fi
+          else
+            echo "ref=$REF" >> $GITHUB_OUTPUT
+            echo "使用指定 ref: $REF"
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/UnderSky
-          ref: ${{ github.event.client_payload.ref || github.ref }}
+          ref: ${{ steps.set-ref.outputs.ref }}
 
       - name: Check Skip CI
         run: |
