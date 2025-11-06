@@ -1,8 +1,8 @@
-name: Deploy 2SOMEone
+name: Deploy LEAPERone
 
 on:
   repository_dispatch:
-    types: [deploy-twosomeone]
+    types: [deploy-leaperone]
 
 jobs:
   build-and-deploy:
@@ -47,7 +47,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
-          repository: leaperone/2SOMEone
+          repository: leaperone/LEAPERone
           ref: ${{ steps.set-ref.outputs.ref }}
 
       - name: Check Skip CI
@@ -106,13 +106,13 @@ jobs:
     uses: leaperone/leaperone-releases/.github/workflows/pr-comment.yml@main
     with:
       status: ${{ needs.build-and-deploy.result }}
-      ref: leaperone/2SOMEone@${{ github.event.client_payload.ref }}
+      ref: leaperone/LEAPERone@${{ github.event.client_payload.ref }}
       run_number: ${{ github.run_number }}
       message: ${{ github.event.client_payload.message }}
       author: ${{ github.event.client_payload.author }}
       run_id: ${{ github.run_id }}
       pr_number: ${{ needs.build-and-deploy.outputs.pr_number }}
-      repository: leaperone/2SOMEone
+      repository: leaperone/LEAPERone
     secrets:
       ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
 
@@ -122,7 +122,7 @@ jobs:
     uses: leaperone/leaperone-releases/.github/workflows/feishu-notification.yml@main
     with:
       status: ${{ needs.build-and-deploy.result }}
-      ref: leaperone/2SOMEone@${{ github.event.client_payload.ref }}
+      ref: leaperone/LEAPERone@${{ github.event.client_payload.ref }}
       run_number: ${{ github.run_number }}
       message: ${{ github.event.client_payload.message }}
       author: ${{ github.event.client_payload.author }}
