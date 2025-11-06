@@ -66,25 +66,25 @@ jobs:
         run: docker compose -f ./docker/docker-compose-build.yml build
 
       - name: Tag and Push Docker images
-        if: github.ref == 'refs/heads/main'
+        if: steps.set-ref.outputs.ref == 'main' || steps.set-ref.outputs.ref == 'refs/heads/main'
         run: |
           docker push registry.cn-hongkong.aliyuncs.com/leaperone/saraclick:latest
           docker push registry.cn-hongkong.aliyuncs.com/leaperone/saraclick:backend-latest
       
       - name: Run Database Migrations
-        if: github.ref == 'refs/heads/main'
+        if: steps.set-ref.outputs.ref == 'main' || steps.set-ref.outputs.ref == 'refs/heads/main'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
       - name: Execute Migrations
-        if: github.ref == 'refs/heads/main'
+        if: steps.set-ref.outputs.ref == 'main' || steps.set-ref.outputs.ref == 'refs/heads/main'
         run: |
           npm install -g prisma
           export SARACLICK_DATABASE_URL="${{ secrets.SARACLICK_DATABASE_URL }}"
           sh prisma/migrate_deploy.sh
 
       - name: Deploy to Production
-        if: github.ref == 'refs/heads/main'
+        if: steps.set-ref.outputs.ref == 'main' || steps.set-ref.outputs.ref == 'refs/heads/main'
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.ALIYUN_HK_HOST }}
