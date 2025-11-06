@@ -7,6 +7,8 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.set-ref.outputs.pr_number }}
     
     steps:
       - name: Validate and set ref
@@ -15,24 +17,29 @@ jobs:
           REF="${{ github.event.client_payload.ref }}"
           if [ -z "$REF" ]; then
             echo "ref=main" >> $GITHUB_OUTPUT
+            echo "pr_number=" >> $GITHUB_OUTPUT
             echo "使用默认分支: main (ref 为空)"
           elif [[ "$REF" =~ ^([0-9]+)/merge ]]; then
             # 提取 PR 号，使用 PR 的 merge ref
             PR_NUMBER="${BASH_REMATCH[1]}"
             echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
+            echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
             echo "检测到 PR merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
           elif [[ "$REF" == *"/merge"* ]]; then
             # 其他 merge 格式，尝试提取 PR 号
             PR_NUMBER=$(echo "$REF" | grep -oE '[0-9]+' | head -1)
             if [ -n "$PR_NUMBER" ]; then
               echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
+              echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
               echo "检测到 merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
             else
               echo "ref=main" >> $GITHUB_OUTPUT
+              echo "pr_number=" >> $GITHUB_OUTPUT
               echo "无法提取 PR 号，使用默认分支: main (原始 ref: $REF)"
             fi
           else
             echo "ref=$REF" >> $GITHUB_OUTPUT
+            echo "pr_number=" >> $GITHUB_OUTPUT
             echo "使用指定 ref: $REF"
           fi
 
@@ -92,6 +99,20 @@ jobs:
           port: ${{ secrets.ALIYUN_CN_PORT }}
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
           script: ${{ secrets.DEPLOY_TWOSOMEREN_SCRIPT }}
+
+  pr-comment:
+    needs: build-and-deploy
+    if: always() && needs.build-and-deploy.outputs.pr_number != ''
+    uses: leaperone/leaperone-releases/.github/workflows/pr-comment.yml@main
+    with:
+      status: ${{ needs.build-and-deploy.result }}
+      ref: leaperone/2SOMEren@${{ github.event.client_payload.ref }}
+      run_number: ${{ github.run_number }}
+      message: ${{ github.event.client_payload.message }}
+      author: ${{ github.event.client_payload.author }}
+      run_id: ${{ github.run_id }}
+      pr_number: ${{ needs.build-and-deploy.outputs.pr_number }}
+      repository: leaperone/2SOMEren
 
   notify:
     needs: build-and-deploy
