@@ -35,6 +35,15 @@ jobs:
   comment:
     runs-on: ubuntu-latest
     steps:
+      - name: Set author display
+        id: set-author
+        run: |
+          if [ "${{ inputs.status }}" != "success" ] && [ -n "${{ inputs.author }}" ]; then
+            echo "author_display=@${{ inputs.author }}" >> $GITHUB_OUTPUT
+          else
+            echo "author_display=${{ inputs.author }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Find Comment
         uses: peter-evans/find-comment@v3
         id: fc
@@ -42,8 +51,7 @@ jobs:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: ${{ inputs.repository }}
           issue-number: ${{ inputs.pr_number }}
-          comment-author: 'github-actions[bot]'
-          body-includes: '🌟 构建详情'
+          body-includes: '构建详情'
 
       - name: Create comment
         if: steps.fc.outputs.comment-id == ''
@@ -60,7 +68,7 @@ jobs:
             - **分支**：`${{ inputs.ref }}`
             - **构建编号**：#${{ inputs.run_number }}
             - **提交信息**：${{ inputs.message }}
-            - **提交者**：${{ inputs.author }}
+            - **提交者**：${{ steps.set-author.outputs.author_display }}
 
             ---
 
@@ -84,7 +92,7 @@ jobs:
             - **分支**：`${{ inputs.ref }}`
             - **构建编号**：#${{ inputs.run_number }}
             - **提交信息**：${{ inputs.message }}
-            - **提交者**：${{ inputs.author }}
+            - **提交者**：${{ steps.set-author.outputs.author_display }}
 
             ---
 
