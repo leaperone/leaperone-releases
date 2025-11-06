@@ -44,17 +44,7 @@ jobs:
             echo "author_display=${{ inputs.author }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Find Comment
-        uses: peter-evans/find-comment@v3
-        id: fc
-        with:
-          token: ${{ secrets.ACCESS_TOKEN }}
-          repository: ${{ inputs.repository }}
-          issue-number: ${{ inputs.pr_number }}
-          body-includes: '构建详情'
-
       - name: Create comment
-        if: steps.fc.outputs.comment-id == ''
         uses: peter-evans/create-or-update-comment@v5
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
@@ -72,33 +62,8 @@ jobs:
 
             ---
 
-            ${{ inputs.status == 'success' && '✨ 构建已经完成，快去看看新功能吧！' || '😱 糟糕！构建出现了问题，请及时检查！' }}
+            ${{ inputs.status == 'success' && '✨ 构建已经完成，可以合并！' || '😱 糟糕！构建出现了问题，请及时检查！' }}
 
             [查看详情 👉](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.run_id }})
-          reactions: ${{ inputs.status == 'success' && '+1' || 'eyes' }}
-
-      - name: Update comment
-        if: steps.fc.outputs.comment-id != ''
-        uses: peter-evans/create-or-update-comment@v5
-        with:
-          token: ${{ secrets.ACCESS_TOKEN }}
-          repository: ${{ inputs.repository }}
-          comment-id: ${{ steps.fc.outputs.comment-id }}
-          body: |
-            ## ${{ inputs.status == 'success' && '🚀 构建成功啦！' || '❌ 构建失败了！' }}
-
-            ### 🌟 构建详情
-
-            - **分支**：`${{ inputs.ref }}`
-            - **构建编号**：#${{ inputs.run_number }}
-            - **提交信息**：${{ inputs.message }}
-            - **提交者**：${{ steps.set-author.outputs.author_display }}
-
-            ---
-
-            ${{ inputs.status == 'success' && '✨ 构建已经完成，快去看看新功能吧！' || '😱 糟糕！构建出现了问题，请及时检查！' }}
-
-            [查看详情 👉](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.run_id }})
-          edit-mode: replace
           reactions: ${{ inputs.status == 'success' && '+1' || 'eyes' }}
 
