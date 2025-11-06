@@ -39,6 +39,7 @@ jobs:
         run: docker compose -f ./docker/docker-compose-build.yml build
 
       - name: Tag and Push Docker images
+        if: github.ref == 'refs/heads/main'
         run: |
           docker push registry.cn-hongkong.aliyuncs.com/leaperone/dokilove:latest
       
@@ -47,7 +48,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: |
+      - name: Execute Migrations
+        if: github.ref == 'refs/heads/main'
+        run: |
           npm install -g prisma
           export DOKILOVE_DATABASE_URL="${{ secrets.DOKILOVE_DATABASE_URL }}"
           sh prisma/migrate_deploy.sh
