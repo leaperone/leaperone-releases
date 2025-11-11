@@ -75,8 +75,8 @@ jobs:
       - name: Tag and Push Docker images
         if: steps.set-ref.outputs.ref == 'main' || steps.set-ref.outputs.ref == 'refs/heads/main'
         run: |
-          docker push registry.cn-hongkong.aliyuncs.com/leaperone/twosomeone:web-latest
-          docker push registry.cn-hongkong.aliyuncs.com/leaperone/twosomeone:backend-latest
+          docker push registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:web-latest
+          docker push registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:backend-latest
       
       - name: Run Database Migrations
         if: steps.set-ref.outputs.ref == 'main' || steps.set-ref.outputs.ref == 'refs/heads/main'
@@ -87,7 +87,7 @@ jobs:
         if: steps.set-ref.outputs.ref == 'main' || steps.set-ref.outputs.ref == 'refs/heads/main'
         run: |
           npm install -g prisma
-          export TWOSOMEONE_DATABASE_URL="${{ secrets.TWOSOMEONE_DATABASE_URL }}"
+          export LEAPERONE_DATABASE_URL="${{ secrets.LEAPERONE_DATABASE_URL }}"
           sh prisma/migrate_deploy.sh
 
       - name: Deploy to Production
@@ -98,7 +98,7 @@ jobs:
           username: ${{ secrets.ALIYUN_CN_USERNAME }}
           port: ${{ secrets.ALIYUN_CN_PORT }}
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
-          script: ${{ secrets.DEPLOY_TWOSOMEONE_SCRIPT }}
+          script: ${{ secrets.DEPLOY_LEAPERONE_SCRIPT }}
 
   pr-comment:
     needs: build-and-deploy
