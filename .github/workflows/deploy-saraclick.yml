@@ -87,7 +87,7 @@ jobs:
       - name: Execute Migrations
         if: steps.set-ref.outputs.ref == 'main' || steps.set-ref.outputs.ref == 'refs/heads/main'
         run: |
-          npm install -g prisma
+          npm install -g prisma@6.19.0
           export SARACLICK_DATABASE_URL="${{ secrets.SARACLICK_DATABASE_URL }}"
           sh prisma/migrate_deploy.sh
 
