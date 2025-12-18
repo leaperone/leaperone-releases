@@ -128,5 +128,7 @@ jobs:
       message: ${{ github.event.client_payload.message }}
       author: ${{ github.event.client_payload.author }}
       run_id: ${{ github.run_id }}
+      repository: leaperone/AI2SOMEone
+      pr_number: ${{ needs.build-and-deploy.outputs.pr_number }}
     secrets:
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
