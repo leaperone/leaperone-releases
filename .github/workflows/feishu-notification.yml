@@ -21,6 +21,15 @@ on:
       run_id:
         required: true
         type: string
+      pr_number:
+        required: false
+        type: string
+        default: ''
+      repository:
+        description: '源代码仓库，格式为 owner/repo，如 leaperone/LEAPERone'
+        required: false
+        type: string
+        default: ''
     secrets:
       FEISHU_WEBHOOK_URL:
         required: true
@@ -71,6 +80,15 @@ jobs:
                       },
                       "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.run_id }}",
                       "type": "primary"
+                    },
+                    {
+                      "tag": "button",
+                      "text": {
+                        "content": "查看代码 📂",
+                        "tag": "plain_text"
+                      },
+                      "url": "${{ inputs.pr_number != '' && inputs.repository != '' && format('{0}/{1}/pull/{2}', github.server_url, inputs.repository, inputs.pr_number) || inputs.repository != '' && format('{0}/{1}', github.server_url, inputs.repository) || format('{0}/{1}', github.server_url, github.repository) }}",
+                      "type": "default"
                     }
                   ]
                 }
