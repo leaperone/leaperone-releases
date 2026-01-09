@@ -82,6 +82,7 @@ jobs:
         run: |
           docker push registry.cn-hongkong.aliyuncs.com/leaperone/multipost:latest
           docker push registry.cn-hongkong.aliyuncs.com/leaperone/multipost:backend-latest
+          docker push registry.cn-hongkong.aliyuncs.com/leaperone/multipost:video-stt-worker-latest
       
       - name: Run Database Migrations
         if: steps.set-ref.outputs.ref == 'main' || steps.set-ref.outputs.ref == 'refs/heads/main'
@@ -102,6 +103,16 @@ jobs:
           host: ${{ secrets.ALIYUN_HK_HOST }}
           username: ${{ secrets.ALIYUN_CN_USERNAME }}
           port: ${{ secrets.ALIYUN_CN_PORT }}
+          key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+          script: ${{ secrets.DEPLOY_MULTIPOST_SCRIPT }}
+      
+      - name: Deploy to Production (Service)
+        if: steps.set-ref.outputs.ref == 'main' || steps.set-ref.outputs.ref == 'refs/heads/main'
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.ALIYUN_HK_HOST }}
+          username: ${{ secrets.SERVICE_SERVER_USERNAME }}
+          port: ${{ secrets.SERVICE_SERVER_PORT }}
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
           script: ${{ secrets.DEPLOY_MULTIPOST_SCRIPT }}
 
