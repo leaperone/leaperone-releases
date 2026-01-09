@@ -114,7 +114,7 @@ jobs:
           username: ${{ secrets.SERVICE_SERVER_USERNAME }}
           port: ${{ secrets.SERVICE_SERVER_PORT }}
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
-          script: ${{ secrets.DEPLOY_MULTIPOST_SCRIPT }}
+          script: ${{ secrets.SERVICE_DEPLOY_MULTIPOST_SCRIPT }}
 
   pr-comment:
     needs: build-and-deploy
