@@ -1,0 +1,81 @@
+name: Telegram Notification
+
+on:
+  workflow_call:
+    inputs:
+      status:
+        required: true
+        type: string
+      ref:
+        required: true
+        type: string
+      run_number:
+        required: true
+        type: string
+      message:
+        required: false
+        type: string
+      author:
+        required: false
+        type: string
+      run_id:
+        required: true
+        type: string
+      pr_number:
+        required: false
+        type: string
+        default: ''
+      repository:
+        description: '源代码仓库，格式为 owner/repo'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      TELEGRAM_BOT_TOKEN:
+        required: true
+      TELEGRAM_CHAT_ID:
+        required: true
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Telegram Notification
+        run: |
+          if [ "${{ inputs.status }}" = "success" ]; then
+            EMOJI="✅"
+            STATUS_TEXT="部署成功"
+            FOOTER="部署已完成，快去看看新功能吧！"
+          else
+            EMOJI="❌"
+            STATUS_TEXT="部署失败"
+            FOOTER="部署出现问题，请及时检查！"
+          fi
+
+          ACTIONS_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.run_id }}"
+
+          if [ -n "${{ inputs.pr_number }}" ] && [ -n "${{ inputs.repository }}" ]; then
+            CODE_URL="${{ github.server_url }}/${{ inputs.repository }}/pull/${{ inputs.pr_number }}"
+          elif [ -n "${{ inputs.repository }}" ]; then
+            CODE_URL="${{ github.server_url }}/${{ inputs.repository }}"
+          else
+            CODE_URL="${{ github.server_url }}/${{ github.repository }}"
+          fi
+
+          TEXT="${EMOJI} *${STATUS_TEXT}*
+
+📦 *分支*: \`${{ inputs.ref }}\`
+🔢 *构建*: #${{ inputs.run_number }}
+💬 *提交*: ${{ inputs.message }}
+👤 *提交者*: ${{ inputs.author }}
+
+${FOOTER}
+
+[查看详情](${ACTIONS_URL}) | [查看代码](${CODE_URL})"
+
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+              --arg chat_id "${{ secrets.TELEGRAM_CHAT_ID }}" \
+              --arg text "$TEXT" \
+              '{chat_id: $chat_id, parse_mode: "Markdown", text: $text, disable_web_page_preview: true}')"

@@ -148,3 +148,20 @@ jobs:
       pr_number: ${{ needs.build-and-deploy.outputs.pr_number }}
     secrets:
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+
+  notify-telegram:
+    needs: build-and-deploy
+    if: always()
+    uses: leaperone/leaperone-releases/.github/workflows/telegram-notification.yml@main
+    with:
+      status: ${{ needs.build-and-deploy.result }}
+      ref: leaperone/UnderSky@${{ github.event.client_payload.ref }}
+      run_number: ${{ github.run_number }}
+      message: ${{ github.event.client_payload.message }}
+      author: ${{ github.event.client_payload.author }}
+      run_id: ${{ github.run_id }}
+      repository: leaperone/UnderSky
+      pr_number: ${{ needs.build-and-deploy.outputs.pr_number }}
+    secrets:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
