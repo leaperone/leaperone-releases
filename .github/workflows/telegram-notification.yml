@@ -41,41 +41,87 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Send Telegram Notification
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          STATUS: ${{ inputs.status }}
+          REF: ${{ inputs.ref }}
+          RUN_NUMBER: ${{ inputs.run_number }}
+          MESSAGE: ${{ inputs.message }}
+          AUTHOR: ${{ inputs.author }}
+          RUN_ID: ${{ inputs.run_id }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPOSITORY: ${{ inputs.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          GH_REPOSITORY: ${{ github.repository }}
         run: |
-          if [ "${{ inputs.status }}" = "success" ]; then
-            EMOJI="✅"
-            STATUS_TEXT="部署成功"
-            FOOTER="部署已完成，快去看看新功能吧！"
-          else
-            EMOJI="❌"
-            STATUS_TEXT="部署失败"
-            FOOTER="部署出现问题，请及时检查！"
+          # 提取项目名
+          PROJECT_NAME="${REPOSITORY##*/}"
+          if [ -z "$PROJECT_NAME" ]; then
+            PROJECT_NAME="${GH_REPOSITORY##*/}"
           fi
 
-          ACTIONS_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.run_id }}"
+          # 状态信息
+          if [ "$STATUS" = "success" ]; then
+            TEXT="✅ *${PROJECT_NAME}* 部署成功
 
-          if [ -n "${{ inputs.pr_number }}" ] && [ -n "${{ inputs.repository }}" ]; then
-            CODE_URL="${{ github.server_url }}/${{ inputs.repository }}/pull/${{ inputs.pr_number }}"
-          elif [ -n "${{ inputs.repository }}" ]; then
-            CODE_URL="${{ github.server_url }}/${{ inputs.repository }}"
+          📦 \`${REF}\`
+          🔢 构建 #${RUN_NUMBER}
+          💬 ${MESSAGE}
+          👤 ${AUTHOR}"
           else
-            CODE_URL="${{ github.server_url }}/${{ github.repository }}"
+            TEXT="❌ *${PROJECT_NAME}* 部署失败
+
+          📦 \`${REF}\`
+          🔢 构建 #${RUN_NUMBER}
+          💬 ${MESSAGE}
+          👤 ${AUTHOR}
+
+          ⚠️ 请及时检查！"
           fi
 
-          TEXT="${EMOJI} *${STATUS_TEXT}*
+          # 构建按钮
+          ACTIONS_URL="${SERVER_URL}/${GH_REPOSITORY}/actions/runs/${RUN_ID}"
 
-📦 *分支*: \`${{ inputs.ref }}\`
-🔢 *构建*: #${{ inputs.run_number }}
-💬 *提交*: ${{ inputs.message }}
-👤 *提交者*: ${{ inputs.author }}
+          if [ -n "$PR_NUMBER" ] && [ -n "$REPOSITORY" ]; then
+            CODE_URL="${SERVER_URL}/${REPOSITORY}/pull/${PR_NUMBER}"
+            CODE_LABEL="PR #${PR_NUMBER}"
+          elif [ -n "$REPOSITORY" ]; then
+            CODE_URL="${SERVER_URL}/${REPOSITORY}"
+            CODE_LABEL="源代码"
+          else
+            CODE_URL="${SERVER_URL}/${GH_REPOSITORY}"
+            CODE_LABEL="源代码"
+          fi
 
-${FOOTER}
+          # 构建 inline keyboard JSON
+          BUTTONS='[
+            [
+              {"text":"📋 构建日志","url":"'"${ACTIONS_URL}"'"},
+              {"text":"💻 '"${CODE_LABEL}"'","url":"'"${CODE_URL}"'"}
+            ]
+          ]'
 
-[查看详情](${ACTIONS_URL}) | [查看代码](${CODE_URL})"
+          # 失败时加一个 re-run 按钮
+          if [ "$STATUS" != "success" ]; then
+            RERUN_URL="${SERVER_URL}/${GH_REPOSITORY}/actions/runs/${RUN_ID}"
+            BUTTONS='[
+              [
+                {"text":"📋 构建日志","url":"'"${ACTIONS_URL}"'"},
+                {"text":"💻 '"${CODE_LABEL}"'","url":"'"${CODE_URL}"'"}
+              ],
+              [
+                {"text":"🔄 重新运行","url":"'"${RERUN_URL}"'"}
+              ]
+            ]'
+          fi
 
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+          # 发送消息
+          jq -n \
+            --arg chat_id "$TG_CHAT_ID" \
+            --arg text "$TEXT" \
+            --argjson reply_markup "{\"inline_keyboard\": $BUTTONS}" \
+            '{chat_id: $chat_id, parse_mode: "Markdown", text: $text, disable_web_page_preview: true, reply_markup: $reply_markup}' \
+          | curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -H "Content-Type: application/json" \
-            -d "$(jq -n \
-              --arg chat_id "${{ secrets.TELEGRAM_CHAT_ID }}" \
-              --arg text "$TEXT" \
-              '{chat_id: $chat_id, parse_mode: "Markdown", text: $text, disable_web_page_preview: true}')"
+            -d @-
