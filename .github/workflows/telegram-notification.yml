@@ -104,7 +104,7 @@ jobs:
 
           # 成功 + 有 PR 时加压缩合并按钮
           if [ "$STATUS" = "success" ] && [ -n "$PR_NUMBER" ] && [ -n "$REPOSITORY" ]; then
-            SQUASH_MSG="@Leo 请将 ${SERVER_URL}/${REPOSITORY}/pull/${PR_NUMBER} 压缩合并"
+            SQUASH_MSG="@leaperone_bot 请将 ${SERVER_URL}/${REPOSITORY}/pull/${PR_NUMBER} 压缩合并"
             BUTTONS='[
               [
                 {"text":"📋 构建日志","url":"'"${ACTIONS_URL}"'"},
