@@ -35,6 +35,8 @@ on:
         required: true
       TELEGRAM_CHAT_ID:
         required: true
+      ACCESS_TOKEN:
+        required: false
 
 jobs:
   notify:
@@ -54,11 +56,35 @@ jobs:
           REPOSITORY: ${{ inputs.repository }}
           SERVER_URL: ${{ github.server_url }}
           GH_REPOSITORY: ${{ github.repository }}
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
         run: |
           # 提取项目名
           PROJECT_NAME="${REPOSITORY##*/}"
           if [ -z "$PROJECT_NAME" ]; then
             PROJECT_NAME="${GH_REPOSITORY##*/}"
+          fi
+
+          # 查询 PR 状态
+          PR_STATUS=""
+          if [ -n "$PR_NUMBER" ] && [ -n "$REPOSITORY" ]; then
+            AUTH_HEADER=""
+            if [ -n "$ACCESS_TOKEN" ]; then
+              AUTH_HEADER="Authorization: token ${ACCESS_TOKEN}"
+            fi
+            PR_DATA=$(curl -s -H "$AUTH_HEADER" "https://api.github.com/repos/${REPOSITORY}/pulls/${PR_NUMBER}")
+            PR_STATE=$(echo "$PR_DATA" | jq -r '.state // empty')
+            PR_MERGED=$(echo "$PR_DATA" | jq -r '.merged // false')
+            PR_DRAFT=$(echo "$PR_DATA" | jq -r '.draft // false')
+
+            if [ "$PR_MERGED" = "true" ]; then
+              PR_STATUS="merged"
+            elif [ "$PR_STATE" = "closed" ]; then
+              PR_STATUS="closed"
+            elif [ "$PR_DRAFT" = "true" ]; then
+              PR_STATUS="draft"
+            else
+              PR_STATUS="open"
+            fi
           fi
 
           # 状态信息
@@ -94,40 +120,37 @@ jobs:
             CODE_LABEL="源代码"
           fi
 
-          # 构建 inline keyboard JSON
-          BUTTONS='[
-            [
-              {"text":"📋 构建日志","url":"'"${ACTIONS_URL}"'"},
-              {"text":"💻 '"${CODE_LABEL}"'","url":"'"${CODE_URL}"'"}
-            ]
-          ]'
+          PR_URL="${SERVER_URL}/${REPOSITORY}/pull/${PR_NUMBER}"
+          SQUASH_MSG="请将 ${PR_URL} 压缩合并"
+          DROP_MSG="请将 ${PR_URL} 关闭"
+          READY_MSG="请将 ${PR_URL} 标记为 ready for review"
+          REOPEN_MSG="请将 ${PR_URL} 重新打开"
+          RERUN_URL="${SERVER_URL}/${GH_REPOSITORY}/actions/runs/${RUN_ID}"
 
-          # 成功 + 有 PR 时加压缩合并按钮
-          if [ "$STATUS" = "success" ] && [ -n "$PR_NUMBER" ] && [ -n "$REPOSITORY" ]; then
-            SQUASH_MSG="请将 ${SERVER_URL}/${REPOSITORY}/pull/${PR_NUMBER} 压缩合并"
-            BUTTONS='[
-              [
-                {"text":"📋 构建日志","url":"'"${ACTIONS_URL}"'"},
-                {"text":"💻 '"${CODE_LABEL}"'","url":"'"${CODE_URL}"'"}
-              ],
-              [
-                {"text":"🔀 压缩合并","switch_inline_query_current_chat":"'"${SQUASH_MSG}"'"}
-              ]
-            ]'
+          # 第一行：通用按钮（始终显示）
+          ROW1='[{"text":"📋 构建日志","url":"'"${ACTIONS_URL}"'"},{"text":"💻 '"${CODE_LABEL}"'","url":"'"${CODE_URL}"'"}]'
+
+          # 第二行：根据构建状态和 PR 状态决定
+          ROW2=""
+          if [ "$STATUS" != "success" ]; then
+            # 构建失败：显示重新运行
+            ROW2='[{"text":"🔄 重新运行","url":"'"${RERUN_URL}"'"}]'
+          elif [ "$PR_STATUS" = "draft" ]; then
+            # Draft：Ready for Review + Drop
+            ROW2='[{"text":"👀 Ready","switch_inline_query_current_chat":"'"${READY_MSG}"'"},{"text":"🗑 Drop","switch_inline_query_current_chat":"'"${DROP_MSG}"'"}]'
+          elif [ "$PR_STATUS" = "open" ]; then
+            # Open：压缩合并 + Drop
+            ROW2='[{"text":"🔀 压缩合并","switch_inline_query_current_chat":"'"${SQUASH_MSG}"'"},{"text":"🗑 Drop","switch_inline_query_current_chat":"'"${DROP_MSG}"'"}]'
+          elif [ "$PR_STATUS" = "closed" ]; then
+            # Closed：Reopen
+            ROW2='[{"text":"♻️ Reopen","switch_inline_query_current_chat":"'"${REOPEN_MSG}"'"}]'
           fi
 
-          # 失败时加一个 re-run 按钮
-          if [ "$STATUS" != "success" ]; then
-            RERUN_URL="${SERVER_URL}/${GH_REPOSITORY}/actions/runs/${RUN_ID}"
-            BUTTONS='[
-              [
-                {"text":"📋 构建日志","url":"'"${ACTIONS_URL}"'"},
-                {"text":"💻 '"${CODE_LABEL}"'","url":"'"${CODE_URL}"'"}
-              ],
-              [
-                {"text":"🔄 重新运行","url":"'"${RERUN_URL}"'"}
-              ]
-            ]'
+          # 组装 BUTTONS
+          if [ -n "$ROW2" ]; then
+            BUTTONS="[${ROW1},${ROW2}]"
+          else
+            BUTTONS="[${ROW1}]"
           fi
 
           # 发送消息
