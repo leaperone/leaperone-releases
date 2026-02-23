@@ -123,15 +123,16 @@ jobs:
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
           script: ${{ secrets.DEPLOY_MULTIPOST_SCRIPT }}
       
-      - name: Deploy to Production (Service)
-        if: steps.set-ref.outputs.is_deployable == 'true'
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.ALIYUN_HK_HOST }}
-          username: ${{ secrets.SERVICE_SERVER_USERNAME }}
-          port: ${{ secrets.SERVICE_SERVER_PORT }}
-          key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
-          script: ${{ secrets.SERVICE_DEPLOY_MULTIPOST_SCRIPT }}
+      # Temporarily disabled: Deploy to Production (Service)
+      # - name: Deploy to Production (Service)
+      #   if: steps.set-ref.outputs.is_deployable == 'true'
+      #   uses: appleboy/ssh-action@v1.0.0
+      #   with:
+      #     host: ${{ secrets.ALIYUN_HK_HOST }}
+      #     username: ${{ secrets.SERVICE_SERVER_USERNAME }}
+      #     port: ${{ secrets.SERVICE_SERVER_PORT }}
+      #     key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+      #     script: ${{ secrets.SERVICE_DEPLOY_MULTIPOST_SCRIPT }}
 
   pr-comment:
     needs: build-and-deploy
