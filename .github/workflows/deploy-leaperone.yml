@@ -110,7 +110,7 @@ jobs:
         if: steps.set-ref.outputs.is_deployable == 'true'
         run: |
           pnpm install --filter @leaperone/db
-          DATABASE_URL="${{ secrets.DATABASE_URL }}" pnpm --filter @leaperone/db db:migrate
+          DATABASE_URL="${{ secrets.LEAPERONE_DATABASE_URL }}" pnpm --filter @leaperone/db db:migrate
 
       - name: Deploy to Production
         if: steps.set-ref.outputs.is_deployable == 'true'
