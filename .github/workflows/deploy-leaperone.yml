@@ -90,23 +90,27 @@ jobs:
           username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
           password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
 
-      - name: Tag and Push Docker images
+      - name: Push Docker images
         if: steps.set-ref.outputs.is_deployable == 'true'
         run: |
           docker push registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:web-latest
-          docker push registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:backend-latest
-      
-      - name: Run Database Migrations
+          docker push registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:api-latest
+
+      - name: Setup Node.js
         if: steps.set-ref.outputs.is_deployable == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Execute Migrations
+      - name: Install pnpm
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Run Database Migrations
         if: steps.set-ref.outputs.is_deployable == 'true'
         run: |
-          npm install -g prisma@6.19.0
-          export LEAPERONE_DATABASE_URL="${{ secrets.LEAPERONE_DATABASE_URL }}"
-          sh prisma/migrate_deploy.sh
+          pnpm install --filter @leaperone/db
+          DATABASE_URL="${{ secrets.DATABASE_URL }}" pnpm --filter @leaperone/db db:migrate
 
       - name: Deploy to Production
         if: steps.set-ref.outputs.is_deployable == 'true'
