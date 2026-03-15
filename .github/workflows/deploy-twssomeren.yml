@@ -122,10 +122,14 @@ jobs:
           TWOSOMEREN_BILI_DATABASE_URL: ${{ secrets.TWOSOMEREN_BILI_DATABASE_URL }}
           REGION_DATABASE_URL: ${{ secrets.REGION_DATABASE_URL }}
         run: |
-          npm install drizzle-kit drizzle-orm pg
-          npx drizzle-kit migrate --config=drizzle.config.main.ts
-          npx drizzle-kit migrate --config=drizzle.config.bili.ts
-          npx drizzle-kit migrate --config=drizzle.config.region.ts
+          mkdir -p /tmp/drizzle-migrate && cd /tmp/drizzle-migrate && npm init -y && npm install drizzle-kit drizzle-orm pg && cd "$GITHUB_WORKSPACE"
+          npx --prefix /tmp/drizzle-migrate drizzle-kit migrate --config=drizzle.config.main.ts
+          npx --prefix /tmp/drizzle-migrate drizzle-kit migrate --config=drizzle.config.bili.ts
+          if [ -n "$REGION_DATABASE_URL" ]; then
+            npx --prefix /tmp/drizzle-migrate drizzle-kit migrate --config=drizzle.config.region.ts
+          else
+            echo "Skipping region migration: REGION_DATABASE_URL not set"
+          fi
 
       - name: Deploy to Production (Shanghai)
         if: steps.set-ref.outputs.is_deployable == 'true'
