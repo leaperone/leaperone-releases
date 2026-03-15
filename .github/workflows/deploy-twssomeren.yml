@@ -134,8 +134,12 @@ jobs:
           pnpm db:migrate:main
           echo "Running bili DB migration..."
           pnpm db:migrate:bili
-          echo "Running region DB migration..."
-          pnpm db:migrate:region
+          if [ -n "$REGION_DATABASE_URL" ]; then
+            echo "Running region DB migration..."
+            pnpm db:migrate:region
+          else
+            echo "Skipping region migration: REGION_DATABASE_URL not set"
+          fi
 
       - name: Deploy to Production (Shanghai)
         if: steps.set-ref.outputs.is_deployable == 'true'
