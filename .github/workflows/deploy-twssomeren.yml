@@ -123,6 +123,7 @@ jobs:
           REGION_DATABASE_URL: ${{ secrets.REGION_DATABASE_URL }}
         run: |
           mkdir -p /tmp/drizzle-migrate && cd /tmp/drizzle-migrate && npm init -y && npm install drizzle-kit drizzle-orm pg && cd "$GITHUB_WORKSPACE"
+          export NODE_PATH="/tmp/drizzle-migrate/node_modules:$NODE_PATH"
           npx --prefix /tmp/drizzle-migrate drizzle-kit migrate --config=drizzle.config.main.ts
           npx --prefix /tmp/drizzle-migrate drizzle-kit migrate --config=drizzle.config.bili.ts
           if [ -n "$REGION_DATABASE_URL" ]; then
