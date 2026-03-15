@@ -114,13 +114,18 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+
       - name: Execute Migrations
         if: steps.set-ref.outputs.is_deployable == 'true'
+        env:
+          TWOSOMEREN_DATABASE_URL: ${{ secrets.TWOSOMEREN_DATABASE_URL }}
+          TWOSOMEREN_BILI_DATABASE_URL: ${{ secrets.TWOSOMEREN_BILI_DATABASE_URL }}
+          REGION_DATABASE_URL: ${{ secrets.REGION_DATABASE_URL }}
         run: |
-          npm install -g prisma@6.19.0
-          export TWOSOMEREN_DATABASE_URL="${{ secrets.TWOSOMEREN_DATABASE_URL }}"
-          export TWOSOMEREN_BILI_DATABASE_URL="${{ secrets.TWOSOMEREN_BILI_DATABASE_URL }}"
-          sh prisma/migrate_deploy.sh
+          npm install drizzle-kit drizzle-orm pg
+          npx drizzle-kit migrate --config=drizzle.config.main.ts
+          npx drizzle-kit migrate --config=drizzle.config.bili.ts
+          npx drizzle-kit migrate --config=drizzle.config.region.ts
 
       - name: Deploy to Production (Shanghai)
         if: steps.set-ref.outputs.is_deployable == 'true'
@@ -173,22 +178,3 @@ jobs:
       pr_number: ${{ needs.build-and-deploy.outputs.pr_number }}
     secrets:
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-
-# Disabled: notifications now handled by Leo webhook handler
-#   notify-telegram:
-#     needs: build-and-deploy
-#     if: always()
-#     uses: leaperone/leaperone-releases/.github/workflows/telegram-notification.yml@main
-#     with:
-#       status: ${{ needs.build-and-deploy.result }}
-#       ref: leaperone/2SOMEren@${{ github.event.client_payload.ref }}
-#       run_number: ${{ github.run_number }}
-#       message: ${{ github.event.client_payload.message }}
-#       author: ${{ github.event.client_payload.author }}
-#       run_id: ${{ github.run_id }}
-#       repository: leaperone/2SOMEren
-#       pr_number: ${{ needs.build-and-deploy.outputs.pr_number }}
-#     secrets:
-#       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-#       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-#       ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
