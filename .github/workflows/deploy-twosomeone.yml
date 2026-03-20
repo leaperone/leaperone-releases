@@ -10,6 +10,7 @@ jobs:
     outputs:
       pr_number: ${{ steps.set-ref.outputs.pr_number }}
       is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
+      is_tag: ${{ steps.set-ref.outputs.is_tag }}
       deploy_env: ${{ steps.set-ref.outputs.deploy_env }}
 
     steps:
@@ -30,12 +31,14 @@ jobs:
             echo "ref=main" >> $GITHUB_OUTPUT
             echo "pr_number=" >> $GITHUB_OUTPUT
             echo "is_deployable=true" >> $GITHUB_OUTPUT
+            echo "is_tag=false" >> $GITHUB_OUTPUT
             echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
             echo "使用默认分支: main (ref 为空)"
           elif [[ "$REF" == "main" ]] || [[ "$REF" == "refs/heads/main" ]]; then
             echo "ref=$REF" >> $GITHUB_OUTPUT
             echo "pr_number=" >> $GITHUB_OUTPUT
             echo "is_deployable=true" >> $GITHUB_OUTPUT
+            echo "is_tag=false" >> $GITHUB_OUTPUT
             echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
             echo "使用 main 分支: $REF"
           elif [[ "$REF" =~ ^([0-9]+)/merge ]]; then
@@ -43,6 +46,7 @@ jobs:
             echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
             echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
             echo "is_deployable=false" >> $GITHUB_OUTPUT
+            echo "is_tag=false" >> $GITHUB_OUTPUT
             echo "deploy_env=beta" >> $GITHUB_OUTPUT
             echo "检测到 PR merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
           elif [[ "$REF" == *"/merge"* ]]; then
@@ -51,12 +55,14 @@ jobs:
               echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
               echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
               echo "is_deployable=false" >> $GITHUB_OUTPUT
+              echo "is_tag=false" >> $GITHUB_OUTPUT
               echo "deploy_env=beta" >> $GITHUB_OUTPUT
               echo "检测到 merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
             else
               echo "ref=main" >> $GITHUB_OUTPUT
               echo "pr_number=" >> $GITHUB_OUTPUT
               echo "is_deployable=true" >> $GITHUB_OUTPUT
+              echo "is_tag=false" >> $GITHUB_OUTPUT
               echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
               echo "无法提取 PR 号，使用默认分支: main (原始 ref: $REF)"
             fi
@@ -64,12 +70,14 @@ jobs:
             echo "ref=$REF" >> $GITHUB_OUTPUT
             echo "pr_number=" >> $GITHUB_OUTPUT
             echo "is_deployable=true" >> $GITHUB_OUTPUT
+            echo "is_tag=true" >> $GITHUB_OUTPUT
             echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
             echo "检测到 tag: $REF，将执行部署"
           else
             echo "ref=$REF" >> $GITHUB_OUTPUT
             echo "pr_number=" >> $GITHUB_OUTPUT
             echo "is_deployable=false" >> $GITHUB_OUTPUT
+            echo "is_tag=false" >> $GITHUB_OUTPUT
             echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
             echo "使用指定 ref: $REF"
           fi
@@ -108,9 +116,22 @@ jobs:
           username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
           password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
 
+      - name: Login to Aliyun Docker Registry (Hong Kong)
+        if: steps.set-ref.outputs.is_tag == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-hongkong.aliyuncs.com
+          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+
       - name: Push Docker images
         if: steps.set-ref.outputs.is_deployable == 'true'
-        run: docker push registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-main-latest
+        run: |
+          docker push registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-main-latest
+          if [ "${{ steps.set-ref.outputs.is_tag }}" == "true" ]; then
+            docker tag registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-main-latest registry.cn-hongkong.aliyuncs.com/leaperone/2someren:web-main-latest
+            docker push registry.cn-hongkong.aliyuncs.com/leaperone/2someren:web-main-latest
+          fi
 
       - name: Setup Node.js & pnpm
         if: steps.set-ref.outputs.is_deployable == 'true'
@@ -153,8 +174,36 @@ jobs:
       env: ${{ needs.build-and-push.outputs.deploy_env }}
     secrets: inherit
 
+  deploy-shanghai:
+    needs: build-and-push
+    if: needs.build-and-push.outputs.is_tag == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Production (Shanghai)
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.ALIYUN_CN_HOST }}
+          username: ${{ secrets.ALIYUN_CN_USERNAME }}
+          port: ${{ secrets.ALIYUN_CN_PORT }}
+          key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+          script: ${{ secrets.DEPLOY_TWOSOMEREN_SCRIPT }}
+
+  deploy-hongkong:
+    needs: build-and-push
+    if: needs.build-and-push.outputs.is_tag == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Production (Hong Kong)
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.ALIYUN_HK_HOST }}
+          username: ${{ secrets.ALIYUN_CN_USERNAME }}
+          port: ${{ secrets.ALIYUN_CN_PORT }}
+          key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+          script: ${{ secrets.DEPLOY_TWOSOMEREN_HK_SCRIPT }}
+
   pr-comment:
-    needs: [build-and-push, deploy]
+    needs: [build-and-push, deploy, deploy-shanghai, deploy-hongkong]
     if: always() && needs.build-and-push.outputs.pr_number != ''
     uses: leaperone/leaperone-releases/.github/workflows/pr-comment.yml@main
     with:
@@ -170,7 +219,7 @@ jobs:
       ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
 
   notify:
-    needs: [build-and-push, deploy]
+    needs: [build-and-push, deploy, deploy-shanghai, deploy-hongkong]
     if: always()
     uses: leaperone/leaperone-releases/.github/workflows/feishu-notification.yml@main
     with:
