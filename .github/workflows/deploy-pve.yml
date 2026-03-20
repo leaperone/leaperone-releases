@@ -1,0 +1,41 @@
+name: Deploy to PVE
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        required: true
+        type: string
+        description: "Project name (matches compose/<project>/ and /opt/apps/<project>/)"
+      env:
+        required: true
+        type: string
+        description: "Deploy environment (production / beta)"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout deployment configs
+        uses: actions/checkout@v4
+
+      - name: Sync compose file to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.PVE_APP_HOST }}
+          username: ${{ secrets.PVE_APP_USERNAME }}
+          key: ${{ secrets.PVE_APP_SSH_KEY }}
+          port: ${{ secrets.PVE_APP_PORT }}
+          source: "compose/${{ inputs.project }}/docker-compose.yml"
+          target: "/opt/apps/${{ inputs.project }}/${{ inputs.env }}"
+          strip_components: 2
+          overwrite: true
+
+      - name: Deploy
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.PVE_APP_HOST }}
+          username: ${{ secrets.PVE_APP_USERNAME }}
+          key: ${{ secrets.PVE_APP_SSH_KEY }}
+          port: ${{ secrets.PVE_APP_PORT }}
+          script: /opt/apps/bin/deploy.sh ${{ inputs.project }} ${{ inputs.env }}
