@@ -112,10 +112,30 @@ jobs:
         if: steps.set-ref.outputs.is_deployable == 'true'
         run: docker push registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-main-latest
 
-  # TODO: Database migration
-  # DB is on PVE LXC 210 (internal network 10.10.10.210), not reachable from GitHub Actions.
-  # Planned approach: SSH to app LXC and run migration via Docker.
-  # Requires adding a migration target to the Dockerfile or installing Node.js on the LXC.
+      - name: Setup Node.js & pnpm
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install pnpm
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - name: Install migration dependencies
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        run: pnpm install --ignore-scripts
+
+      - name: Run database migrations
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        env:
+          TWOSOMEREN_DATABASE_URL: ${{ secrets.TWOSOMEREN_DATABASE_URL }}
+          TWOSOMEREN_BILI_DATABASE_URL: ${{ secrets.TWOSOMEREN_BILI_DATABASE_URL }}
+        run: |
+          echo "Running main DB migration..."
+          pnpm --filter 2someone-web db:migrate:main
+          echo "Running bili DB migration..."
+          pnpm --filter 2someone-web db:migrate:bili
 
   deploy:
     needs: build-and-push
