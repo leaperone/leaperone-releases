@@ -131,11 +131,18 @@ jobs:
         env:
           TWOSOMEREN_DATABASE_URL: ${{ secrets.TWOSOMEREN_DATABASE_URL }}
           TWOSOMEREN_BILI_DATABASE_URL: ${{ secrets.TWOSOMEREN_BILI_DATABASE_URL }}
+          REGION_DATABASE_URL: ${{ secrets.REGION_DATABASE_URL }}
         run: |
           echo "Running main DB migration..."
           pnpm --filter 2someone-web db:migrate:main
           echo "Running bili DB migration..."
           pnpm --filter 2someone-web db:migrate:bili
+          if [ -n "$REGION_DATABASE_URL" ]; then
+            echo "Running region DB migration..."
+            pnpm --filter 2someone-web db:migrate:region
+          else
+            echo "Skipping region migration: REGION_DATABASE_URL not set"
+          fi
 
   deploy:
     needs: build-and-push
