@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout deployment configs
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Sync compose file to server
         uses: appleboy/scp-action@v0.1.7
