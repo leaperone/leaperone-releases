@@ -83,7 +83,7 @@ jobs:
           fi
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/2SOMEone
@@ -110,7 +110,7 @@ jobs:
 
       - name: Login to Aliyun Docker Registry (Shanghai)
         if: steps.set-ref.outputs.is_deployable == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: registry.cn-shanghai.aliyuncs.com
           username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
@@ -118,7 +118,7 @@ jobs:
 
       - name: Login to Aliyun Docker Registry (Hong Kong)
         if: steps.set-ref.outputs.is_tag == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: registry.cn-hongkong.aliyuncs.com
           username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
@@ -135,7 +135,7 @@ jobs:
 
       - name: Setup Node.js & pnpm
         if: steps.set-ref.outputs.is_deployable == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
