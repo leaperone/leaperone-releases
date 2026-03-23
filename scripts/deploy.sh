@@ -28,6 +28,16 @@ docker compose pull
 echo "==> Starting services..."
 docker compose up -d --remove-orphans
 
+if [ -d "$APP_DIR/scripts" ]; then
+  echo "==> Running post-deploy scripts..."
+  for script in "$APP_DIR"/scripts/*; do
+    if [ -f "$script" ] && [ -x "$script" ]; then
+      echo "--> $(basename "$script")"
+      "$script"
+    fi
+  done
+fi
+
 echo "==> Cleaning up old images..."
 docker image prune -f
 
