@@ -1,0 +1,26 @@
+services:
+  # web:
+  #   image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/multipost:${IMAGE_TAG:-latest}
+  #   container_name: multipost-web-${DEPLOY_ENV:-production}
+  #   ports:
+  #     - "${WEB_PORT:-3000}:3000"
+  #   env_file:
+  #     - .env
+  #   restart: unless-stopped
+
+  # backend:
+  #   image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/multipost:${BACKEND_IMAGE_TAG:-backend-latest}
+  #   container_name: multipost-backend-${DEPLOY_ENV:-production}
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     MODE: ${MODE:-production}
+  #     PORT: ${BACKEND_PORT:-9000}
+  #   restart: unless-stopped
+
+  video-stt-worker:
+    image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/multipost:${VIDEO_STT_WORKER_IMAGE_TAG:-video-stt-worker-latest}
+    container_name: multipost-video-stt-worker-${DEPLOY_ENV:-production}
+    env_file:
+      - .env
+    restart: unless-stopped

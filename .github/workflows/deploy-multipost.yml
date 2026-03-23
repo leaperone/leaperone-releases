@@ -5,67 +5,100 @@ on:
     types: [deploy-multipost]
 
 jobs:
-  build-and-deploy:
+  resolve-context:
     runs-on: ubuntu-latest
     outputs:
-      pr_number: ${{ steps.set-ref.outputs.pr_number }}
-      is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
-
+      ref: ${{ steps.resolve.outputs.ref }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      is_deployable: ${{ steps.resolve.outputs.is_deployable }}
+      deploy_env: ${{ steps.resolve.outputs.deploy_env }}
+      deploy_hk: ${{ steps.resolve.outputs.deploy_hk }}
+      deploy_pve: ${{ steps.resolve.outputs.deploy_pve }}
     steps:
-      - name: Validate and set ref
-        id: set-ref
+      - name: Resolve deploy context
+        id: resolve
         run: |
           REF="${{ github.event.client_payload.ref }}"
+          ENV_INPUT="${{ github.event.client_payload.env }}"
+          TARGETS="${{ github.event.client_payload.targets }}"
+
+          DEPLOY_ENV="production"
+          PR_NUMBER=""
+          IS_DEPLOYABLE="true"
+
+          if [ -z "$TARGETS" ]; then
+            TARGETS="hk,pve"
+          fi
+
+          DEPLOY_HK="false"
+          DEPLOY_PVE="false"
+
+          if [[ "$TARGETS" == *"hk"* ]]; then
+            DEPLOY_HK="true"
+          fi
+
+          if [[ "$TARGETS" == *"pve"* ]]; then
+            DEPLOY_PVE="true"
+          fi
+
+          if [ "$ENV_INPUT" != "" ] && [ "$ENV_INPUT" != "$DEPLOY_ENV" ]; then
+            IS_DEPLOYABLE="false"
+            echo "Unsupported deploy env: $ENV_INPUT"
+          fi
+
+          if [ "$DEPLOY_HK" = "false" ] && [ "$DEPLOY_PVE" = "false" ]; then
+            IS_DEPLOYABLE="false"
+            echo "No valid deploy targets resolved from: $TARGETS"
+          fi
+
           if [ -z "$REF" ]; then
-            echo "ref=main" >> $GITHUB_OUTPUT
-            echo "pr_number=" >> $GITHUB_OUTPUT
-            echo "is_deployable=true" >> $GITHUB_OUTPUT
+            RESOLVED_REF="main"
             echo "使用默认分支: main (ref 为空)"
           elif [[ "$REF" == "main" ]] || [[ "$REF" == "refs/heads/main" ]]; then
-            echo "ref=$REF" >> $GITHUB_OUTPUT
-            echo "pr_number=" >> $GITHUB_OUTPUT
-            echo "is_deployable=true" >> $GITHUB_OUTPUT
+            RESOLVED_REF="$REF"
             echo "使用 main 分支: $REF"
           elif [[ "$REF" =~ ^([0-9]+)/merge ]]; then
-            # 提取 PR 号，使用 PR 的 merge ref
             PR_NUMBER="${BASH_REMATCH[1]}"
-            echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
-            echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
-            echo "is_deployable=false" >> $GITHUB_OUTPUT
+            RESOLVED_REF="refs/pull/${PR_NUMBER}/merge"
+            IS_DEPLOYABLE="false"
             echo "检测到 PR merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
           elif [[ "$REF" == *"/merge"* ]]; then
-            # 其他 merge 格式，尝试提取 PR 号
-            PR_NUMBER=$(echo "$REF" | grep -oE '[0-9]+' | head -1)
+            PR_NUMBER=$(printf '%s' "$REF" | grep -oE '[0-9]+' | head -1)
             if [ -n "$PR_NUMBER" ]; then
-              echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
-              echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
-              echo "is_deployable=false" >> $GITHUB_OUTPUT
+              RESOLVED_REF="refs/pull/${PR_NUMBER}/merge"
+              IS_DEPLOYABLE="false"
               echo "检测到 merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
             else
-              echo "ref=main" >> $GITHUB_OUTPUT
-              echo "pr_number=" >> $GITHUB_OUTPUT
-              echo "is_deployable=true" >> $GITHUB_OUTPUT
+              RESOLVED_REF="main"
               echo "无法提取 PR 号，使用默认分支: main (原始 ref: $REF)"
             fi
           elif [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
-            # Tag 格式，标记为需要部署
-            echo "ref=$REF" >> $GITHUB_OUTPUT
-            echo "pr_number=" >> $GITHUB_OUTPUT
-            echo "is_deployable=true" >> $GITHUB_OUTPUT
+            RESOLVED_REF="$REF"
             echo "检测到 tag: $REF，将执行部署"
           else
-            echo "ref=$REF" >> $GITHUB_OUTPUT
-            echo "pr_number=" >> $GITHUB_OUTPUT
-            echo "is_deployable=false" >> $GITHUB_OUTPUT
-            echo "使用指定 ref: $REF"
+            RESOLVED_REF="$REF"
+            IS_DEPLOYABLE="false"
+            echo "非生产部署 ref，不执行部署: $REF"
           fi
 
+          echo "ref=$RESOLVED_REF" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "is_deployable=$IS_DEPLOYABLE" >> "$GITHUB_OUTPUT"
+          echo "deploy_env=$DEPLOY_ENV" >> "$GITHUB_OUTPUT"
+          echo "deploy_hk=$DEPLOY_HK" >> "$GITHUB_OUTPUT"
+          echo "deploy_pve=$DEPLOY_PVE" >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    needs: resolve-context
+    if: needs.resolve-context.outputs.is_deployable == 'true'
+    runs-on: ubuntu-latest
+    steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/MultiPost
-          ref: ${{ steps.set-ref.outputs.ref }}
+          ref: ${{ needs.resolve-context.outputs.ref }}
 
       - name: Check Skip CI
         run: |
@@ -86,35 +119,72 @@ jobs:
           NEXT_PUBLIC_POSTHOG_HOST: https://us.posthog.com
         run: docker compose -f ./docker/docker-compose-build.yml build
 
-      - name: Login to Aliyun Docker Registry
-        if: steps.set-ref.outputs.is_deployable == 'true'
+      - name: Login to Aliyun Docker Registry (Shanghai)
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-shanghai.aliyuncs.com
+          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+
+      - name: Login to Aliyun Docker Registry (Hong Kong)
         uses: docker/login-action@v3
         with:
           registry: registry.cn-hongkong.aliyuncs.com
           username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
           password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
 
-      - name: Tag and Push Docker images
-        if: steps.set-ref.outputs.is_deployable == 'true'
+      - name: Push Docker images to both registries
         run: |
-          docker push registry.cn-hongkong.aliyuncs.com/leaperone/multipost:latest
-          docker push registry.cn-hongkong.aliyuncs.com/leaperone/multipost:backend-latest
-          docker push registry.cn-hongkong.aliyuncs.com/leaperone/multipost:video-stt-worker-latest
-      
-      - name: Run Database Migrations
-        if: steps.set-ref.outputs.is_deployable == 'true'
+          WEB_HK_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/multipost:latest"
+          BACKEND_HK_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/multipost:backend-latest"
+          VIDEO_STT_HK_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/multipost:video-stt-worker-latest"
+
+          WEB_SH_IMAGE="registry.cn-shanghai.aliyuncs.com/leaperone/multipost:latest"
+          BACKEND_SH_IMAGE="registry.cn-shanghai.aliyuncs.com/leaperone/multipost:backend-latest"
+          VIDEO_STT_SH_IMAGE="registry.cn-shanghai.aliyuncs.com/leaperone/multipost:video-stt-worker-latest"
+
+          docker tag "$WEB_HK_IMAGE" "$WEB_SH_IMAGE"
+          docker tag "$BACKEND_HK_IMAGE" "$BACKEND_SH_IMAGE"
+          docker tag "$VIDEO_STT_HK_IMAGE" "$VIDEO_STT_SH_IMAGE"
+
+          docker push "$WEB_SH_IMAGE"
+          docker push "$BACKEND_SH_IMAGE"
+          docker push "$VIDEO_STT_SH_IMAGE"
+
+          docker push "$WEB_HK_IMAGE"
+          docker push "$BACKEND_HK_IMAGE"
+          docker push "$VIDEO_STT_HK_IMAGE"
+
+  migrate-production:
+    needs: [resolve-context, build-and-push]
+    if: needs.resolve-context.outputs.is_deployable == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/MultiPost
+          ref: ${{ needs.resolve-context.outputs.ref }}
+
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Execute Migrations
-        if: steps.set-ref.outputs.is_deployable == 'true'
+
+      - name: Execute migrations
+        env:
+          MULTIPOST_DATABASE_URL: ${{ secrets.MULTIPOST_DATABASE_URL }}
         run: |
           npm install -g prisma@6.19.0
-          export MULTIPOST_DATABASE_URL="${{ secrets.MULTIPOST_DATABASE_URL }}"
           sh prisma/migrate_deploy.sh
 
-      - name: Deploy to Production
-        if: steps.set-ref.outputs.is_deployable == 'true'
+  deploy-hk:
+    needs: [resolve-context, migrate-production]
+    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_hk == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to HK production
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.ALIYUN_HK_HOST }}
@@ -122,65 +192,44 @@ jobs:
           port: ${{ secrets.ALIYUN_CN_PORT }}
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
           script: ${{ secrets.DEPLOY_MULTIPOST_SCRIPT }}
-      
-      # Temporarily disabled: Deploy to Production (Service)
-      # - name: Deploy to Production (Service)
-      #   if: steps.set-ref.outputs.is_deployable == 'true'
-      #   uses: appleboy/ssh-action@v1.0.0
-      #   with:
-      #     host: ${{ secrets.ALIYUN_HK_HOST }}
-      #     username: ${{ secrets.SERVICE_SERVER_USERNAME }}
-      #     port: ${{ secrets.SERVICE_SERVER_PORT }}
-      #     key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
-      #     script: ${{ secrets.SERVICE_DEPLOY_MULTIPOST_SCRIPT }}
+
+  deploy-pve:
+    needs: [resolve-context, migrate-production]
+    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_pve == 'true'
+    uses: ./.github/workflows/deploy-pve.yml
+    with:
+      project: multipost
+      env: production
+    secrets: inherit
 
   pr-comment:
-    needs: build-and-deploy
-    if: always() && needs.build-and-deploy.outputs.pr_number != ''
+    needs: [resolve-context, build-and-push, migrate-production, deploy-hk, deploy-pve]
+    if: always() && needs.resolve-context.outputs.pr_number != ''
     uses: leaperone/leaperone-releases/.github/workflows/pr-comment.yml@main
     with:
-      status: ${{ needs.build-and-deploy.result }}
-      ref: leaperone/MultiPost@${{ github.event.client_payload.ref }}
+      status: ${{ contains(format('{0},{1},{2},{3}', needs.build-and-push.result, needs.migrate-production.result, needs.deploy-hk.result, needs.deploy-pve.result), 'failure') && 'failure' || contains(format('{0},{1},{2},{3}', needs.build-and-push.result, needs.migrate-production.result, needs.deploy-hk.result, needs.deploy-pve.result), 'cancelled') && 'cancelled' || needs.resolve-context.outputs.is_deployable != 'true' && needs.build-and-push.result || 'success' }}
+      ref: leaperone/MultiPost@${{ needs.resolve-context.outputs.ref }}
       run_number: ${{ github.run_number }}
       message: ${{ github.event.client_payload.message }}
       author: ${{ github.event.client_payload.author }}
       run_id: ${{ github.run_id }}
-      pr_number: ${{ needs.build-and-deploy.outputs.pr_number }}
+      pr_number: ${{ needs.resolve-context.outputs.pr_number }}
       repository: leaperone/MultiPost
     secrets:
       ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
 
   notify:
-    needs: build-and-deploy
+    needs: [resolve-context, build-and-push, migrate-production, deploy-hk, deploy-pve]
     if: always()
     uses: leaperone/leaperone-releases/.github/workflows/feishu-notification.yml@main
     with:
-      status: ${{ needs.build-and-deploy.result }}
-      ref: leaperone/MultiPost@${{ github.event.client_payload.ref }}
+      status: ${{ contains(format('{0},{1},{2},{3}', needs.build-and-push.result, needs.migrate-production.result, needs.deploy-hk.result, needs.deploy-pve.result), 'failure') && 'failure' || contains(format('{0},{1},{2},{3}', needs.build-and-push.result, needs.migrate-production.result, needs.deploy-hk.result, needs.deploy-pve.result), 'cancelled') && 'cancelled' || needs.resolve-context.outputs.is_deployable != 'true' && needs.build-and-push.result || 'success' }}
+      ref: leaperone/MultiPost@${{ needs.resolve-context.outputs.ref }}
       run_number: ${{ github.run_number }}
       message: ${{ github.event.client_payload.message }}
       author: ${{ github.event.client_payload.author }}
       run_id: ${{ github.run_id }}
       repository: leaperone/MultiPost
-      pr_number: ${{ needs.build-and-deploy.outputs.pr_number }}
+      pr_number: ${{ needs.resolve-context.outputs.pr_number }}
     secrets:
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-
-# Disabled: notifications now handled by Leo webhook handler
-#   notify-telegram:
-#     needs: build-and-deploy
-#     if: always()
-#     uses: leaperone/leaperone-releases/.github/workflows/telegram-notification.yml@main
-#     with:
-#       status: ${{ needs.build-and-deploy.result }}
-#       ref: leaperone/MultiPost@${{ github.event.client_payload.ref }}
-#       run_number: ${{ github.run_number }}
-#       message: ${{ github.event.client_payload.message }}
-#       author: ${{ github.event.client_payload.author }}
-#       run_id: ${{ github.run_id }}
-#       repository: leaperone/MultiPost
-#       pr_number: ${{ needs.build-and-deploy.outputs.pr_number }}
-#     secrets:
-#       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-#       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-#       ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
