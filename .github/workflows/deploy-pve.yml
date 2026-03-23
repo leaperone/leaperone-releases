@@ -19,14 +19,14 @@ jobs:
       - name: Checkout deployment configs
         uses: actions/checkout@v6
 
-      - name: Sync compose file to server
+      - name: Sync compose directory to server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.PVE_APP_HOST }}
           username: ${{ secrets.PVE_APP_USERNAME }}
           key: ${{ secrets.PVE_APP_SSH_KEY }}
           port: ${{ secrets.PVE_APP_PORT }}
-          source: "compose/${{ inputs.project }}/docker-compose.yml"
+          source: "compose/${{ inputs.project }}/*"
           target: "/opt/apps/${{ inputs.project }}/${{ inputs.env }}"
           strip_components: 2
           overwrite: true
