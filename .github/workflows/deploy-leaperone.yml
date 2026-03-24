@@ -81,6 +81,9 @@ jobs:
 
       - name: Build Docker images
         run: docker compose -f ./docker/docker-compose-build.yml build
+        env:
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.LEAPERONE_POSTHOG_KEY }}
+          NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.LEAPERONE_POSTHOG_HOST }}
 
       - name: Login to Aliyun Docker Registry
         if: steps.set-ref.outputs.is_deployable == 'true'
