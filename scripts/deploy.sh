@@ -25,8 +25,11 @@ cd "$APP_DIR"
 echo "==> Pulling images for ${PROJECT}/${ENV}..."
 docker compose pull
 
+echo "==> Stopping old containers..."
+docker compose down --remove-orphans
+
 echo "==> Starting services..."
-docker compose up -d --remove-orphans
+docker compose up -d
 
 if [ -d "$APP_DIR/scripts" ]; then
   echo "==> Running post-deploy scripts..."
