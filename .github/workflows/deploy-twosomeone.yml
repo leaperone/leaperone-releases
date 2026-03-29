@@ -167,7 +167,7 @@ jobs:
 
   deploy:
     needs: build-and-push
-    if: needs.build-and-push.outputs.is_deployable == 'true'
+    if: needs.build-and-push.outputs.is_deployable == 'true' && needs.build-and-push.outputs.is_tag != 'true'
     uses: ./.github/workflows/deploy-pve.yml
     with:
       project: twosomeone
