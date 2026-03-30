@@ -1,3 +1,5 @@
+name: twosomeone-${DEPLOY_ENV:-production}
+
 services:
   web:
     image: registry.cn-shanghai.aliyuncs.com/leaperone/2someren:${IMAGE_TAG:-web-main-latest}
