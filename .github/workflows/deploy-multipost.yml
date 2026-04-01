@@ -14,6 +14,9 @@ jobs:
       deploy_env: ${{ steps.resolve.outputs.deploy_env }}
       deploy_hk: ${{ steps.resolve.outputs.deploy_hk }}
       deploy_pve: ${{ steps.resolve.outputs.deploy_pve }}
+      build_web: ${{ steps.resolve.outputs.build_web }}
+      build_backend: ${{ steps.resolve.outputs.build_backend }}
+      build_video_stt: ${{ steps.resolve.outputs.build_video_stt }}
     steps:
       - name: Resolve deploy context
         id: resolve
@@ -21,6 +24,7 @@ jobs:
           REF="${{ github.event.client_payload.ref }}"
           ENV_INPUT="${{ github.event.client_payload.env }}"
           TARGETS="${{ github.event.client_payload.targets }}"
+          BUILD_TARGETS="${{ github.event.client_payload.build_targets }}"
 
           DEPLOY_ENV="production"
           PR_NUMBER=""
@@ -39,6 +43,27 @@ jobs:
 
           if [[ "$TARGETS" == *"pve"* ]]; then
             DEPLOY_PVE="true"
+          fi
+
+          # Resolve build targets (default: all)
+          if [ -z "$BUILD_TARGETS" ]; then
+            BUILD_TARGETS="web,backend,video-stt-worker"
+          fi
+
+          BUILD_WEB="false"
+          BUILD_BACKEND="false"
+          BUILD_VIDEO_STT="false"
+
+          if [[ "$BUILD_TARGETS" == *"web"* ]]; then
+            BUILD_WEB="true"
+          fi
+
+          if [[ "$BUILD_TARGETS" == *"backend"* ]]; then
+            BUILD_BACKEND="true"
+          fi
+
+          if [[ "$BUILD_TARGETS" == *"video-stt-worker"* ]]; then
+            BUILD_VIDEO_STT="true"
           fi
 
           if [ "$ENV_INPUT" != "" ] && [ "$ENV_INPUT" != "$DEPLOY_ENV" ]; then
@@ -72,7 +97,7 @@ jobs:
               RESOLVED_REF="main"
               echo "无法提取 PR 号，使用默认分支: main (原始 ref: $REF)"
             fi
-          elif [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
+          elif [[ "$REF" =~ ^(web-|worker-)?v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
             RESOLVED_REF="$REF"
             echo "检测到 tag: $REF，将执行部署"
           else
@@ -87,6 +112,9 @@ jobs:
           echo "deploy_env=$DEPLOY_ENV" >> "$GITHUB_OUTPUT"
           echo "deploy_hk=$DEPLOY_HK" >> "$GITHUB_OUTPUT"
           echo "deploy_pve=$DEPLOY_PVE" >> "$GITHUB_OUTPUT"
+          echo "build_web=$BUILD_WEB" >> "$GITHUB_OUTPUT"
+          echo "build_backend=$BUILD_BACKEND" >> "$GITHUB_OUTPUT"
+          echo "build_video_stt=$BUILD_VIDEO_STT" >> "$GITHUB_OUTPUT"
 
   build-and-push:
     needs: resolve-context
@@ -117,7 +145,19 @@ jobs:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           POSTHOG_MULTIPOST_ENV_ID: ${{ secrets.POSTHOG_MULTIPOST_ENV_ID }}
           NEXT_PUBLIC_POSTHOG_HOST: https://us.posthog.com
-        run: docker compose -f ./docker/docker-compose-build.yml build
+        run: |
+          BUILD_SERVICES=""
+          if [ "${{ needs.resolve-context.outputs.build_web }}" = "true" ]; then
+            BUILD_SERVICES="$BUILD_SERVICES multipost"
+          fi
+          if [ "${{ needs.resolve-context.outputs.build_backend }}" = "true" ]; then
+            BUILD_SERVICES="$BUILD_SERVICES multipost-backend"
+          fi
+          if [ "${{ needs.resolve-context.outputs.build_video_stt }}" = "true" ]; then
+            BUILD_SERVICES="$BUILD_SERVICES video-stt-worker"
+          fi
+          echo "Building services:$BUILD_SERVICES"
+          docker compose -f ./docker/docker-compose-build.yml build $BUILD_SERVICES
 
       - name: Login to Aliyun Docker Registry (Shanghai)
         uses: docker/login-action@v3
@@ -135,25 +175,32 @@ jobs:
 
       - name: Push Docker images to both registries
         run: |
-          WEB_HK_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/multipost:latest"
-          BACKEND_HK_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/multipost:backend-latest"
-          VIDEO_STT_HK_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/multipost:video-stt-worker-latest"
+          HK_REGISTRY="registry.cn-hongkong.aliyuncs.com/leaperone/multipost"
+          SH_REGISTRY="registry.cn-shanghai.aliyuncs.com/leaperone/multipost"
 
-          WEB_SH_IMAGE="registry.cn-shanghai.aliyuncs.com/leaperone/multipost:latest"
-          BACKEND_SH_IMAGE="registry.cn-shanghai.aliyuncs.com/leaperone/multipost:backend-latest"
-          VIDEO_STT_SH_IMAGE="registry.cn-shanghai.aliyuncs.com/leaperone/multipost:video-stt-worker-latest"
+          push_image() {
+            local tag="$1"
+            local hk_image="$HK_REGISTRY:$tag"
+            local sh_image="$SH_REGISTRY:$tag"
+            docker tag "$hk_image" "$sh_image"
+            docker push "$sh_image"
+            docker push "$hk_image"
+          }
 
-          docker tag "$WEB_HK_IMAGE" "$WEB_SH_IMAGE"
-          docker tag "$BACKEND_HK_IMAGE" "$BACKEND_SH_IMAGE"
-          docker tag "$VIDEO_STT_HK_IMAGE" "$VIDEO_STT_SH_IMAGE"
+          if [ "${{ needs.resolve-context.outputs.build_web }}" = "true" ]; then
+            echo "Pushing web image..."
+            push_image "latest"
+          fi
 
-          docker push "$WEB_SH_IMAGE"
-          docker push "$BACKEND_SH_IMAGE"
-          docker push "$VIDEO_STT_SH_IMAGE"
+          if [ "${{ needs.resolve-context.outputs.build_backend }}" = "true" ]; then
+            echo "Pushing backend image..."
+            push_image "backend-latest"
+          fi
 
-          docker push "$WEB_HK_IMAGE"
-          docker push "$BACKEND_HK_IMAGE"
-          docker push "$VIDEO_STT_HK_IMAGE"
+          if [ "${{ needs.resolve-context.outputs.build_video_stt }}" = "true" ]; then
+            echo "Pushing video-stt-worker image..."
+            push_image "video-stt-worker-latest"
+          fi
 
   migrate-production:
     needs: [resolve-context, build-and-push]
