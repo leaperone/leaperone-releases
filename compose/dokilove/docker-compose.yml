@@ -1,0 +1,8 @@
+services:
+  dokilove:
+    image: registry-vpc.cn-hongkong.aliyuncs.com/leaperone/dokilove:latest
+    restart: always
+    ports:
+      - "9800:3000"
+    env_file:
+      - dokilove.env
