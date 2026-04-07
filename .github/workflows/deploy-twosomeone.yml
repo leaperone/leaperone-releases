@@ -202,8 +202,68 @@ jobs:
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
           script: ${{ secrets.DEPLOY_TWOSOMEREN_HK_SCRIPT }}
 
+  cdn-refresh:
+    needs: [deploy-shanghai, deploy-hongkong]
+    if: always() && (needs.deploy-shanghai.result == 'success' || needs.deploy-hongkong.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Purge CDN cache
+        env:
+          DOGECLOUD_ACCESS_KEY: ${{ secrets.DOGECLOUD_ACCESS_KEY }}
+          DOGECLOUD_SECRET_KEY: ${{ secrets.DOGECLOUD_SECRET_KEY }}
+        run: |
+          python3 << 'PYEOF'
+          import hmac, hashlib, urllib.request, urllib.parse, json, os, time
+
+          access_key = os.environ['DOGECLOUD_ACCESS_KEY']
+          secret_key = os.environ['DOGECLOUD_SECRET_KEY']
+
+          def dogecloud_api(api_path, body=''):
+              sign_str = api_path + '\n' + body
+              sign = hmac.new(secret_key.encode(), sign_str.encode('utf-8'), hashlib.sha1).digest().hex()
+              url = 'https://api.dogecloud.com' + api_path
+              req = urllib.request.Request(url, data=body.encode() if body else None, method='POST' if body else 'GET')
+              req.add_header('Authorization', 'TOKEN ' + access_key + ':' + sign)
+              if body:
+                  req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+              resp = urllib.request.urlopen(req)
+              return json.loads(resp.read().decode())
+
+          # 1. Submit refresh task
+          body = urllib.parse.urlencode({'rtype': 'path', 'urls': 'https://2some.ren/'})
+          result = dogecloud_api('/cdn/refresh/add.json', body)
+          print(json.dumps(result, indent=2))
+          if result['code'] != 200:
+              raise Exception(f"CDN refresh failed: {result}")
+          task_id = result['data']['task_id']
+          print(f"Task submitted: {task_id}")
+
+          # 2. Poll until done
+          for i in range(30):
+              time.sleep(10)
+              query = dogecloud_api(f'/cdn/refresh/query.json?id={task_id}')
+              if query['code'] != 200:
+                  print(f"Query error: {query}")
+                  continue
+              tasks = query['data'].get('tasks', [])
+              if not tasks:
+                  print(f"[{i+1}] No task info yet...")
+                  continue
+              task = tasks[0]
+              status = task['status']
+              pct = task.get('percent', 0)
+              print(f"[{i+1}] status={status} percent={pct}%")
+              if status == 'done':
+                  print("CDN cache purged successfully!")
+                  break
+              if status == 'failed':
+                  raise Exception("CDN refresh task failed")
+          else:
+              raise Exception("CDN refresh timed out after 300s (30 * 10s)")
+          PYEOF
+
   pr-comment:
-    needs: [build-and-push, deploy, deploy-shanghai, deploy-hongkong]
+    needs: [build-and-push, deploy, deploy-shanghai, deploy-hongkong, cdn-refresh]
     if: always() && needs.build-and-push.outputs.pr_number != ''
     uses: leaperone/leaperone-releases/.github/workflows/pr-comment.yml@main
     with:
@@ -219,7 +279,7 @@ jobs:
       ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
 
   notify:
-    needs: [build-and-push, deploy, deploy-shanghai, deploy-hongkong]
+    needs: [build-and-push, deploy, deploy-shanghai, deploy-hongkong, cdn-refresh]
     if: always()
     uses: leaperone/leaperone-releases/.github/workflows/feishu-notification.yml@main
     with:
