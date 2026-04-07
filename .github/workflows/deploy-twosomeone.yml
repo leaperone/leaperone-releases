@@ -203,8 +203,8 @@ jobs:
           script: ${{ secrets.DEPLOY_TWOSOMEREN_HK_SCRIPT }}
 
   cdn-refresh:
-    needs: [deploy-shanghai, deploy-hongkong]
-    if: always() && (needs.deploy-shanghai.result == 'success' || needs.deploy-hongkong.result == 'success')
+    needs: [build-and-push, deploy-shanghai, deploy-hongkong]
+    if: needs.build-and-push.outputs.is_tag == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Purge CDN cache
