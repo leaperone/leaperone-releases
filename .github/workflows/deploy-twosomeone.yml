@@ -165,9 +165,9 @@ jobs:
             echo "Skipping region migration: REGION_DATABASE_URL not set"
           fi
 
-  deploy:
+  deploy-pve:
     needs: build-and-push
-    if: needs.build-and-push.outputs.is_deployable == 'true' && needs.build-and-push.outputs.is_tag != 'true'
+    if: needs.build-and-push.outputs.is_deployable == 'true'
     uses: ./.github/workflows/deploy-pve.yml
     with:
       project: twosomeone
@@ -263,11 +263,11 @@ jobs:
           PYEOF
 
   pr-comment:
-    needs: [build-and-push, deploy, deploy-shanghai, deploy-hongkong, cdn-refresh]
+    needs: [build-and-push, deploy-pve, deploy-shanghai, deploy-hongkong, cdn-refresh]
     if: always() && needs.build-and-push.outputs.pr_number != ''
     uses: leaperone/leaperone-releases/.github/workflows/pr-comment.yml@main
     with:
-      status: ${{ needs.deploy.result == 'skipped' && needs.build-and-push.result || needs.deploy.result }}
+      status: ${{ needs.deploy-pve.result == 'skipped' && needs.build-and-push.result || needs.deploy-pve.result }}
       ref: leaperone/2SOMEone@${{ github.event.client_payload.ref }}
       run_number: ${{ github.run_number }}
       message: ${{ github.event.client_payload.message }}
@@ -279,11 +279,11 @@ jobs:
       ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
 
   notify:
-    needs: [build-and-push, deploy, deploy-shanghai, deploy-hongkong, cdn-refresh]
+    needs: [build-and-push, deploy-pve, deploy-shanghai, deploy-hongkong, cdn-refresh]
     if: always()
     uses: leaperone/leaperone-releases/.github/workflows/feishu-notification.yml@main
     with:
-      status: ${{ needs.deploy.result == 'skipped' && needs.build-and-push.result || needs.deploy.result }}
+      status: ${{ needs.deploy-pve.result == 'skipped' && needs.build-and-push.result || needs.deploy-pve.result }}
       ref: leaperone/2SOMEone@${{ github.event.client_payload.ref }}
       run_number: ${{ github.run_number }}
       message: ${{ github.event.client_payload.message }}
