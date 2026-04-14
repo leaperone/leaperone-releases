@@ -261,35 +261,3 @@ jobs:
           else:
               raise Exception("CDN refresh timed out after 300s (30 * 10s)")
           PYEOF
-
-  pr-comment:
-    needs: [build-and-push, deploy-pve, deploy-shanghai, deploy-hongkong, cdn-refresh]
-    if: always() && needs.build-and-push.outputs.pr_number != ''
-    uses: leaperone/leaperone-releases/.github/workflows/pr-comment.yml@main
-    with:
-      status: ${{ needs.deploy-pve.result == 'skipped' && needs.build-and-push.result || needs.deploy-pve.result }}
-      ref: leaperone/2SOMEone@${{ github.event.client_payload.ref }}
-      run_number: ${{ github.run_number }}
-      message: ${{ github.event.client_payload.message }}
-      author: ${{ github.event.client_payload.author }}
-      run_id: ${{ github.run_id }}
-      pr_number: ${{ needs.build-and-push.outputs.pr_number }}
-      repository: leaperone/2SOMEone
-    secrets:
-      ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
-
-  notify:
-    needs: [build-and-push, deploy-pve, deploy-shanghai, deploy-hongkong, cdn-refresh]
-    if: always()
-    uses: leaperone/leaperone-releases/.github/workflows/feishu-notification.yml@main
-    with:
-      status: ${{ needs.deploy-pve.result == 'skipped' && needs.build-and-push.result || needs.deploy-pve.result }}
-      ref: leaperone/2SOMEone@${{ github.event.client_payload.ref }}
-      run_number: ${{ github.run_number }}
-      message: ${{ github.event.client_payload.message }}
-      author: ${{ github.event.client_payload.author }}
-      run_id: ${{ github.run_id }}
-      repository: leaperone/2SOMEone
-      pr_number: ${{ needs.build-and-push.outputs.pr_number }}
-    secrets:
-      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}

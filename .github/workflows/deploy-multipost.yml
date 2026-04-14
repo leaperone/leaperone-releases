@@ -248,35 +248,3 @@ jobs:
       project: multipost
       env: production
     secrets: inherit
-
-  pr-comment:
-    needs: [resolve-context, build-and-push, migrate-production, deploy-hk, deploy-pve]
-    if: always() && needs.resolve-context.outputs.pr_number != ''
-    uses: leaperone/leaperone-releases/.github/workflows/pr-comment.yml@main
-    with:
-      status: ${{ contains(format('{0},{1},{2},{3}', needs.build-and-push.result, needs.migrate-production.result, needs.deploy-hk.result, needs.deploy-pve.result), 'failure') && 'failure' || contains(format('{0},{1},{2},{3}', needs.build-and-push.result, needs.migrate-production.result, needs.deploy-hk.result, needs.deploy-pve.result), 'cancelled') && 'cancelled' || needs.resolve-context.outputs.is_deployable != 'true' && needs.build-and-push.result || 'success' }}
-      ref: leaperone/MultiPost@${{ needs.resolve-context.outputs.ref }}
-      run_number: ${{ github.run_number }}
-      message: ${{ github.event.client_payload.message }}
-      author: ${{ github.event.client_payload.author }}
-      run_id: ${{ github.run_id }}
-      pr_number: ${{ needs.resolve-context.outputs.pr_number }}
-      repository: leaperone/MultiPost
-    secrets:
-      ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
-
-  notify:
-    needs: [resolve-context, build-and-push, migrate-production, deploy-hk, deploy-pve]
-    if: always()
-    uses: leaperone/leaperone-releases/.github/workflows/feishu-notification.yml@main
-    with:
-      status: ${{ contains(format('{0},{1},{2},{3}', needs.build-and-push.result, needs.migrate-production.result, needs.deploy-hk.result, needs.deploy-pve.result), 'failure') && 'failure' || contains(format('{0},{1},{2},{3}', needs.build-and-push.result, needs.migrate-production.result, needs.deploy-hk.result, needs.deploy-pve.result), 'cancelled') && 'cancelled' || needs.resolve-context.outputs.is_deployable != 'true' && needs.build-and-push.result || 'success' }}
-      ref: leaperone/MultiPost@${{ needs.resolve-context.outputs.ref }}
-      run_number: ${{ github.run_number }}
-      message: ${{ github.event.client_payload.message }}
-      author: ${{ github.event.client_payload.author }}
-      run_id: ${{ github.run_id }}
-      repository: leaperone/MultiPost
-      pr_number: ${{ needs.resolve-context.outputs.pr_number }}
-    secrets:
-      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
