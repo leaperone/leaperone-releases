@@ -117,7 +117,7 @@ jobs:
           password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
 
       - name: Login to Aliyun Docker Registry (Hong Kong)
-        if: steps.set-ref.outputs.is_tag == 'true'
+        if: steps.set-ref.outputs.is_tag == 'true' || steps.set-ref.outputs.deploy_env == 'beta'
         uses: docker/login-action@v4
         with:
           registry: registry.cn-hongkong.aliyuncs.com
@@ -128,7 +128,7 @@ jobs:
         if: steps.set-ref.outputs.is_deployable == 'true'
         run: |
           docker push registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-main-latest
-          if [ "${{ steps.set-ref.outputs.is_tag }}" == "true" ]; then
+          if [ "${{ steps.set-ref.outputs.is_tag }}" == "true" ] || [ "${{ steps.set-ref.outputs.deploy_env }}" == "beta" ]; then
             docker tag registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-main-latest registry.cn-hongkong.aliyuncs.com/leaperone/2someren:web-main-latest
             docker push registry.cn-hongkong.aliyuncs.com/leaperone/2someren:web-main-latest
           fi
@@ -167,12 +167,26 @@ jobs:
 
   deploy-pve:
     needs: build-and-push
-    if: needs.build-and-push.outputs.is_deployable == 'true'
+    if: needs.build-and-push.outputs.is_deployable == 'true' && needs.build-and-push.outputs.deploy_env != 'beta'
     uses: ./.github/workflows/deploy-pve.yml
     with:
       project: twosomeone
       env: ${{ needs.build-and-push.outputs.deploy_env }}
     secrets: inherit
+
+  deploy-hk-beta:
+    needs: build-and-push
+    if: needs.build-and-push.outputs.is_deployable == 'true' && needs.build-and-push.outputs.deploy_env == 'beta'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy Beta to Hong Kong
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.ALIYUN_HK_HOST }}
+          username: ${{ secrets.ALIYUN_CN_USERNAME }}
+          port: ${{ secrets.ALIYUN_CN_PORT }}
+          key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+          script: /home/leaperone/services/2someren-web/beta/deploy.sh
 
   deploy-shanghai:
     needs: build-and-push
