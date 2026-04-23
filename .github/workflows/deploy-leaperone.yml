@@ -47,8 +47,8 @@ jobs:
               echo "is_deployable=true" >> $GITHUB_OUTPUT
               echo "无法提取 PR 号，使用默认分支: main (原始 ref: $REF)"
             fi
-          elif [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
-            # Tag 格式，标记为需要部署
+          elif [[ "$REF" =~ ^(web-)?v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
+            # Tag 格式，标记为需要部署（支持 v*, web-v* 前缀）
             echo "ref=$REF" >> $GITHUB_OUTPUT
             echo "pr_number=" >> $GITHUB_OUTPUT
             echo "is_deployable=true" >> $GITHUB_OUTPUT
