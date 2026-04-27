@@ -96,6 +96,20 @@ jobs:
             exit 78
           fi
 
+      - name: Set Sentry release
+        id: sentry
+        run: echo "release=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Validate Sentry source map env
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          test -n "$SENTRY_AUTH_TOKEN" || {
+            echo "SENTRY_AUTH_TOKEN is required for deployable web builds"
+            exit 1
+          }
+
       - name: Setup docker-compose
         uses: KengoTODA/actions-setup-docker-compose@v1
         with:
@@ -106,6 +120,12 @@ jobs:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           POSTHOG_2SOMEONE_ENV_ID: ${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
           NEXT_PUBLIC_POSTHOG_HOST: https://us.posthog.com
+          SENTRY_URL: https://s.2some.ren
+          SENTRY_ORG: leaperone
+          SENTRY_PROJECT: 2someone-web
+          SENTRY_ENVIRONMENT: ${{ steps.set-ref.outputs.deploy_env }}
+          SENTRY_RELEASE: 2someone-web@${{ steps.sentry.outputs.release }}
+          SENTRY_AUTH_TOKEN: ${{ steps.set-ref.outputs.is_deployable == 'true' && secrets.SENTRY_AUTH_TOKEN || '' }}
         run: docker compose -f apps/web/docker/docker-compose-build.yml build
 
       - name: Login to Aliyun Docker Registry (Shanghai)
