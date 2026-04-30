@@ -110,26 +110,6 @@ jobs:
             exit 1
           }
 
-      - name: Setup docker-compose
-        uses: KengoTODA/actions-setup-docker-compose@v1
-        with:
-          version: "2.14.2"
-
-      - name: Build Docker images
-        env:
-          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
-          POSTHOG_2SOMEONE_ENV_ID: ${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
-          NEXT_PUBLIC_POSTHOG_KEY: phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
-          NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.one
-          NEXT_PUBLIC_SENTRY_DSN: https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
-          SENTRY_URL: https://sentry.leaper.one
-          SENTRY_ORG: leaperone
-          SENTRY_PROJECT: 2someone-web
-          SENTRY_ENVIRONMENT: ${{ steps.set-ref.outputs.deploy_env }}
-          SENTRY_RELEASE: 2someone-web@${{ steps.sentry.outputs.release }}
-          SENTRY_AUTH_TOKEN: ${{ steps.set-ref.outputs.is_deployable == 'true' && secrets.SENTRY_AUTH_TOKEN || '' }}
-        run: docker compose -f apps/web/docker/docker-compose-build.yml build
-
       - name: Login to Aliyun Docker Registry (Shanghai)
         if: steps.set-ref.outputs.is_deployable == 'true'
         uses: docker/login-action@v4
@@ -139,21 +119,99 @@ jobs:
           password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
 
       - name: Login to Aliyun Docker Registry (Hong Kong)
-        if: steps.set-ref.outputs.is_tag == 'true' || steps.set-ref.outputs.deploy_env == 'beta'
+        if: steps.set-ref.outputs.is_deployable == 'true' && (steps.set-ref.outputs.is_tag == 'true' || steps.set-ref.outputs.deploy_env == 'beta')
         uses: docker/login-action@v4
         with:
           registry: registry.cn-hongkong.aliyuncs.com
           username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
           password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
 
-      - name: Push Docker images
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute Docker tags
+        id: docker-tags
         if: steps.set-ref.outputs.is_deployable == 'true'
         run: |
-          docker push registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-main-latest
+          TAGS="registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-main-latest"
           if [ "${{ steps.set-ref.outputs.is_tag }}" == "true" ] || [ "${{ steps.set-ref.outputs.deploy_env }}" == "beta" ]; then
-            docker tag registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-main-latest registry.cn-hongkong.aliyuncs.com/leaperone/2someren:web-main-latest
-            docker push registry.cn-hongkong.aliyuncs.com/leaperone/2someren:web-main-latest
+            TAGS="$TAGS"$'\n'"registry.cn-hongkong.aliyuncs.com/leaperone/2someren:web-main-latest"
           fi
+          {
+            echo "tags<<EOF"
+            echo "$TAGS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore Next.js build cache
+        id: next-cache
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: actions/cache@v4
+        with:
+          path: next-cache
+          key: next-2someone-web-${{ steps.sentry.outputs.release }}
+          restore-keys: next-2someone-web-
+
+      - name: Inject Next.js cache into buildkit
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: reproducible-containers/buildkit-cache-dance@v3.1.2
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-map: |
+            {
+              "next-cache": {
+                "id": "next-2someone-web",
+                "target": "/app/apps/web/.next/cache"
+              }
+            }
+          skip-extraction: ${{ steps.next-cache.outputs.cache-hit }}
+
+      - name: Build and Push (deployable)
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          file: apps/web/docker/Dockerfile
+          push: true
+          load: false
+          tags: ${{ steps.docker-tags.outputs.tags }}
+          cache-from: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-twosomeone-buildcache
+          cache-to: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-twosomeone-buildcache,mode=max
+          build-args: |
+            POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
+            NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
+            NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
+            NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
+            SENTRY_URL=https://sentry.leaper.one
+            SENTRY_ORG=leaperone
+            SENTRY_PROJECT=2someone-web
+            SENTRY_ENVIRONMENT=${{ steps.set-ref.outputs.deploy_env }}
+            SENTRY_RELEASE=2someone-web@${{ steps.sentry.outputs.release }}
+          secrets: |
+            sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
+            posthog_personal_api_key=${{ secrets.POSTHOG_API_KEY }}
+
+      - name: Build (non-deployable verification)
+        if: steps.set-ref.outputs.is_deployable != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          file: apps/web/docker/Dockerfile
+          push: false
+          load: false
+          tags: 2someren:web-pr-verify
+          build-args: |
+            POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
+            NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
+            NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
+            NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
+            SENTRY_URL=https://sentry.leaper.one
+            SENTRY_ORG=leaperone
+            SENTRY_PROJECT=2someone-web
+            SENTRY_ENVIRONMENT=${{ steps.set-ref.outputs.deploy_env }}
 
       - name: Setup Node.js & pnpm
         if: steps.set-ref.outputs.is_deployable == 'true'
