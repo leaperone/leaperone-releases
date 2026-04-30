@@ -117,10 +117,12 @@ jobs:
 
       - name: Build Docker images
         env:
-          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           POSTHOG_2SOMEONE_ENV_ID: ${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
-          NEXT_PUBLIC_POSTHOG_HOST: https://us.posthog.com
-          SENTRY_URL: https://s.2some.ren
+          NEXT_PUBLIC_POSTHOG_KEY: phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
+          NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.one
+          NEXT_PUBLIC_SENTRY_DSN: https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
+          SENTRY_URL: https://sentry.leaper.one
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: 2someone-web
           SENTRY_ENVIRONMENT: ${{ steps.set-ref.outputs.deploy_env }}
