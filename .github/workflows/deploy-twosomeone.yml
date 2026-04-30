@@ -177,8 +177,8 @@ jobs:
           push: true
           load: false
           tags: ${{ steps.docker-tags.outputs.tags }}
-          cache-from: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-twosomeone-buildcache
-          cache-to: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-twosomeone-buildcache,mode=max
+          cache-from: type=gha,scope=web-twosomeone
+          cache-to: type=gha,scope=web-twosomeone,mode=max
           build-args: |
             POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
             NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
