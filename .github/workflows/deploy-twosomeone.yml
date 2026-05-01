@@ -168,8 +168,6 @@ jobs:
     concurrency:
       group: deploy-twosomeone-deployable
       cancel-in-progress: false
-    env:
-      DOCKER_CONFIG: ${{ runner.temp }}/docker-config
     outputs:
       app_sha: ${{ steps.app-sha.outputs.sha }}
       sentry_release: ${{ steps.sentry.outputs.release }}
