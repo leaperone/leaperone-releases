@@ -293,6 +293,9 @@ jobs:
       - name: Install pnpm
         run: corepack enable && corepack prepare pnpm@latest --activate
 
+      - name: Configure pnpm registry mirror (china)
+        run: pnpm config set registry https://registry.npmmirror.com/
+
       - name: Install migration dependencies
         run: pnpm install --ignore-scripts
 
