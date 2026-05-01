@@ -3,37 +3,64 @@ name: Deploy 2SOMEone
 on:
   repository_dispatch:
     types: [deploy-twosomeone]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Ref to deploy (only main or web-v* tag accepted when env=production)'
+        required: false
+        default: 'main'
+      env:
+        description: 'Deploy environment'
+        required: true
+        type: choice
+        options:
+          - production
+          - beta
+        default: production
 
 jobs:
-  build-and-push:
+  prepare:
     runs-on: ubuntu-latest
     outputs:
+      ref: ${{ steps.set-ref.outputs.ref }}
       pr_number: ${{ steps.set-ref.outputs.pr_number }}
       is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
       is_tag: ${{ steps.set-ref.outputs.is_tag }}
       deploy_env: ${{ steps.set-ref.outputs.deploy_env }}
-
+      runs_on: ${{ steps.set-ref.outputs.runs_on }}
     steps:
       - name: Validate and set ref
         id: set-ref
         run: |
-          REF="${{ github.event.client_payload.ref }}"
-          ENV="${{ github.event.client_payload.env }}"
+          REF="${{ github.event.inputs.ref || github.event.client_payload.ref }}"
+          ENV_INPUT="${{ github.event.inputs.env || github.event.client_payload.env }}"
 
           # Default deploy environment
-          if [ -n "$ENV" ]; then
-            DEPLOY_ENV="$ENV"
-          else
-            DEPLOY_ENV="production"
-          fi
+          DEPLOY_ENV="${ENV_INPUT:-production}"
 
-          if [ -z "$REF" ]; then
+          # workflow_dispatch + env=production: restrict to main or web-v* tag (security)
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "$DEPLOY_ENV" == "production" ]]; then
+            if [[ "$REF" == "main" || "$REF" == "refs/heads/main" || "$REF" =~ ^web-v[0-9]+\.[0-9]+\.[0-9]+ || "$REF" =~ ^refs/tags/web-v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+              IS_TAG=$([[ "$REF" =~ ^(refs/tags/)?web-v ]] && echo true || echo false)
+              echo "ref=$REF" >> $GITHUB_OUTPUT
+              echo "pr_number=" >> $GITHUB_OUTPUT
+              echo "is_deployable=true" >> $GITHUB_OUTPUT
+              echo "is_tag=$IS_TAG" >> $GITHUB_OUTPUT
+              echo "deploy_env=production" >> $GITHUB_OUTPUT
+              echo "manual production validation: ref=$REF (is_tag=$IS_TAG)"
+              IS_DEPLOYABLE=true
+            else
+              echo "ERROR: workflow_dispatch with env=production only accepts ref=main or web-v* tags, got: $REF" >&2
+              exit 1
+            fi
+          elif [ -z "$REF" ]; then
             echo "ref=main" >> $GITHUB_OUTPUT
             echo "pr_number=" >> $GITHUB_OUTPUT
             echo "is_deployable=true" >> $GITHUB_OUTPUT
             echo "is_tag=false" >> $GITHUB_OUTPUT
             echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
             echo "使用默认分支: main (ref 为空)"
+            IS_DEPLOYABLE=true
           elif [[ "$REF" == "main" ]] || [[ "$REF" == "refs/heads/main" ]]; then
             echo "ref=$REF" >> $GITHUB_OUTPUT
             echo "pr_number=" >> $GITHUB_OUTPUT
@@ -41,6 +68,7 @@ jobs:
             echo "is_tag=false" >> $GITHUB_OUTPUT
             echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
             echo "使用 main 分支: $REF"
+            IS_DEPLOYABLE=true
           elif [[ "$REF" =~ ^([0-9]+)/merge ]]; then
             PR_NUMBER="${BASH_REMATCH[1]}"
             echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
@@ -49,6 +77,8 @@ jobs:
             echo "is_tag=false" >> $GITHUB_OUTPUT
             echo "deploy_env=beta" >> $GITHUB_OUTPUT
             echo "检测到 PR merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
+            DEPLOY_ENV=beta
+            IS_DEPLOYABLE=false
           elif [[ "$REF" == *"/merge"* ]]; then
             PR_NUMBER=$(echo "$REF" | grep -oE '[0-9]+' | head -1)
             if [ -n "$PR_NUMBER" ]; then
@@ -58,6 +88,8 @@ jobs:
               echo "is_tag=false" >> $GITHUB_OUTPUT
               echo "deploy_env=beta" >> $GITHUB_OUTPUT
               echo "检测到 merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
+              DEPLOY_ENV=beta
+              IS_DEPLOYABLE=false
             else
               echo "ref=main" >> $GITHUB_OUTPUT
               echo "pr_number=" >> $GITHUB_OUTPUT
@@ -65,6 +97,7 @@ jobs:
               echo "is_tag=false" >> $GITHUB_OUTPUT
               echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
               echo "无法提取 PR 号，使用默认分支: main (原始 ref: $REF)"
+              IS_DEPLOYABLE=true
             fi
           elif [[ "$REF" =~ ^(web-)?v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
             echo "ref=$REF" >> $GITHUB_OUTPUT
@@ -73,6 +106,7 @@ jobs:
             echo "is_tag=true" >> $GITHUB_OUTPUT
             echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
             echo "检测到 tag: $REF，将执行部署"
+            IS_DEPLOYABLE=true
           else
             echo "ref=$REF" >> $GITHUB_OUTPUT
             echo "pr_number=" >> $GITHUB_OUTPUT
@@ -80,14 +114,72 @@ jobs:
             echo "is_tag=false" >> $GITHUB_OUTPUT
             echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
             echo "使用指定 ref: $REF"
+            IS_DEPLOYABLE=false
           fi
 
+          # Decide runs_on: deployable production -> self-hosted china-runner; everything else -> ubuntu-latest
+          if [[ "$IS_DEPLOYABLE" == "true" && "$DEPLOY_ENV" == "production" ]]; then
+            echo 'runs_on=["self-hosted","Linux","X64","china-runner"]' >> $GITHUB_OUTPUT
+            echo "runs_on: china-runner (PVE)"
+          else
+            echo 'runs_on=["ubuntu-latest"]' >> $GITHUB_OUTPUT
+            echo "runs_on: ubuntu-latest"
+          fi
+
+  verify-pr:
+    needs: prepare
+    if: needs.prepare.outputs.is_deployable != 'true'
+    runs-on: ubuntu-latest
+    steps:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/2SOMEone
-          ref: ${{ steps.set-ref.outputs.ref }}
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build (non-deployable verification)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/docker/Dockerfile
+          push: false
+          load: false
+          tags: 2someren:web-pr-verify
+          cache-from: type=gha,scope=web-twosomeone-pr
+          cache-to: type=gha,scope=web-twosomeone-pr,mode=max
+          build-args: |
+            POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
+            NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
+            NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
+            NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
+            SENTRY_URL=https://sentry.leaper.one
+            SENTRY_ORG=leaperone
+            SENTRY_PROJECT=2someone-web
+            SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}
+
+  build-and-push:
+    needs: prepare
+    if: needs.prepare.outputs.is_deployable == 'true'
+    runs-on: ${{ fromJSON(needs.prepare.outputs.runs_on) }}
+    concurrency:
+      group: deploy-twosomeone-deployable
+      cancel-in-progress: false
+    env:
+      DOCKER_CONFIG: ${{ runner.temp }}/docker-config
+    outputs:
+      app_sha: ${{ steps.app-sha.outputs.sha }}
+      sentry_release: ${{ steps.sentry.outputs.release }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/2SOMEone
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Check Skip CI
         run: |
@@ -96,12 +188,15 @@ jobs:
             exit 78
           fi
 
+      - name: Compute app SHA
+        id: app-sha
+        run: echo "sha=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
+
       - name: Set Sentry release
         id: sentry
         run: echo "release=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Validate Sentry source map env
-        if: steps.set-ref.outputs.is_deployable == 'true'
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: |
@@ -111,7 +206,6 @@ jobs:
           }
 
       - name: Login to Aliyun Docker Registry (Shanghai)
-        if: steps.set-ref.outputs.is_deployable == 'true'
         uses: docker/login-action@v4
         with:
           registry: registry.cn-shanghai.aliyuncs.com
@@ -119,7 +213,7 @@ jobs:
           password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
 
       - name: Login to Aliyun Docker Registry (Hong Kong)
-        if: steps.set-ref.outputs.is_deployable == 'true' && (steps.set-ref.outputs.is_tag == 'true' || steps.set-ref.outputs.deploy_env == 'beta')
+        if: needs.prepare.outputs.is_tag == 'true' || needs.prepare.outputs.deploy_env == 'beta'
         uses: docker/login-action@v4
         with:
           registry: registry.cn-hongkong.aliyuncs.com
@@ -129,46 +223,44 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          name: pve-builder
+          driver: docker-container
+          cleanup: false
+          buildkitd-config-inline: |
+            [registry."10.10.10.200:5000"]
+              http = true
+              insecure = true
 
       - name: Compute Docker tags
         id: docker-tags
-        if: steps.set-ref.outputs.is_deployable == 'true'
         run: |
-          TAGS="registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-main-latest"
-          if [ "${{ steps.set-ref.outputs.is_tag }}" == "true" ] || [ "${{ steps.set-ref.outputs.deploy_env }}" == "beta" ]; then
-            TAGS="$TAGS"$'\n'"registry.cn-hongkong.aliyuncs.com/leaperone/2someren:web-main-latest"
+          APP_SHA="${{ steps.app-sha.outputs.sha }}"
+          IS_PVE="${{ needs.prepare.outputs.deploy_env == 'production' }}"
+          IS_TAG="${{ needs.prepare.outputs.is_tag }}"
+          IS_BETA="${{ needs.prepare.outputs.deploy_env == 'beta' }}"
+
+          TAGS=""
+          # PVE internal registry: only for production deploys
+          if [ "$IS_PVE" == "true" ]; then
+            TAGS+="10.10.10.200:5000/leaperone/2someren:web-main-latest"$'\n'
+            TAGS+="10.10.10.200:5000/leaperone/2someren:web-${APP_SHA}"$'\n'
+          fi
+          # ACR Shanghai: always (kept as fallback)
+          TAGS+="registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-main-latest"$'\n'
+          TAGS+="registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-${APP_SHA}"$'\n'
+          # ACR Hong Kong: tag releases or beta deploys
+          if [ "$IS_TAG" == "true" ] || [ "$IS_BETA" == "true" ]; then
+            TAGS+="registry.cn-hongkong.aliyuncs.com/leaperone/2someren:web-main-latest"$'\n'
+            TAGS+="registry.cn-hongkong.aliyuncs.com/leaperone/2someren:web-${APP_SHA}"$'\n'
           fi
           {
             echo "tags<<EOF"
-            echo "$TAGS"
+            echo -n "$TAGS"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Restore Next.js build cache
-        id: next-cache
-        if: steps.set-ref.outputs.is_deployable == 'true'
-        uses: actions/cache@v4
-        with:
-          path: next-cache
-          key: next-2someone-web-${{ steps.sentry.outputs.release }}
-          restore-keys: next-2someone-web-
-
-      - name: Inject Next.js cache into buildkit
-        if: steps.set-ref.outputs.is_deployable == 'true'
-        uses: reproducible-containers/buildkit-cache-dance@v3.1.2
-        with:
-          builder: ${{ steps.buildx.outputs.name }}
-          cache-map: |
-            {
-              "next-cache": {
-                "id": "next-2someone-web",
-                "target": "/app/apps/web/.next/cache"
-              }
-            }
-          skip-extraction: ${{ steps.next-cache.outputs.cache-hit }}
-
       - name: Build and Push (deployable)
-        if: steps.set-ref.outputs.is_deployable == 'true'
         uses: docker/build-push-action@v6
         with:
           builder: ${{ steps.buildx.outputs.name }}
@@ -177,6 +269,8 @@ jobs:
           push: true
           load: false
           tags: ${{ steps.docker-tags.outputs.tags }}
+          add-hosts: |
+            sentry.leaper.one:10.10.10.200
           cache-from: type=gha,scope=web-twosomeone
           cache-to: type=gha,scope=web-twosomeone,mode=max
           build-args: |
@@ -187,48 +281,24 @@ jobs:
             SENTRY_URL=https://sentry.leaper.one
             SENTRY_ORG=leaperone
             SENTRY_PROJECT=2someone-web
-            SENTRY_ENVIRONMENT=${{ steps.set-ref.outputs.deploy_env }}
+            SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}
             SENTRY_RELEASE=2someone-web@${{ steps.sentry.outputs.release }}
           secrets: |
             sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
             posthog_personal_api_key=${{ secrets.POSTHOG_API_KEY }}
 
-      - name: Build (non-deployable verification)
-        if: steps.set-ref.outputs.is_deployable != 'true'
-        uses: docker/build-push-action@v6
-        with:
-          builder: ${{ steps.buildx.outputs.name }}
-          context: .
-          file: apps/web/docker/Dockerfile
-          push: false
-          load: false
-          tags: 2someren:web-pr-verify
-          build-args: |
-            POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
-            NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
-            NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
-            NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
-            SENTRY_URL=https://sentry.leaper.one
-            SENTRY_ORG=leaperone
-            SENTRY_PROJECT=2someone-web
-            SENTRY_ENVIRONMENT=${{ steps.set-ref.outputs.deploy_env }}
-
       - name: Setup Node.js & pnpm
-        if: steps.set-ref.outputs.is_deployable == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: "20"
 
       - name: Install pnpm
-        if: steps.set-ref.outputs.is_deployable == 'true'
         run: corepack enable && corepack prepare pnpm@latest --activate
 
       - name: Install migration dependencies
-        if: steps.set-ref.outputs.is_deployable == 'true'
         run: pnpm install --ignore-scripts
 
       - name: Run database migrations
-        if: steps.set-ref.outputs.is_deployable == 'true'
         env:
           TWOSOMEREN_DATABASE_URL: ${{ secrets.TWOSOMEREN_DATABASE_URL }}
           TWOSOMEREN_BILI_DATABASE_URL: ${{ secrets.TWOSOMEREN_BILI_DATABASE_URL }}
@@ -246,17 +316,18 @@ jobs:
           fi
 
   deploy-pve:
-    needs: build-and-push
-    if: needs.build-and-push.outputs.is_deployable == 'true' && needs.build-and-push.outputs.deploy_env != 'beta'
+    needs: [prepare, build-and-push]
+    if: needs.prepare.outputs.is_deployable == 'true' && needs.prepare.outputs.deploy_env != 'beta'
     uses: ./.github/workflows/deploy-pve.yml
     with:
       project: twosomeone
-      env: ${{ needs.build-and-push.outputs.deploy_env }}
+      env: ${{ needs.prepare.outputs.deploy_env }}
+      runner: '["self-hosted","Linux","X64","china-runner"]'
     secrets: inherit
 
   deploy-hk-beta:
-    needs: build-and-push
-    if: needs.build-and-push.outputs.is_deployable == 'true' && needs.build-and-push.outputs.deploy_env == 'beta'
+    needs: [prepare, build-and-push]
+    if: needs.prepare.outputs.is_deployable == 'true' && needs.prepare.outputs.deploy_env == 'beta'
     runs-on: ubuntu-latest
     steps:
       - name: Deploy Beta to Hong Kong
@@ -269,8 +340,8 @@ jobs:
           script: /home/leaperone/services/2someren-web/beta/deploy.sh
 
   deploy-shanghai:
-    needs: build-and-push
-    if: needs.build-and-push.outputs.is_tag == 'true'
+    needs: [prepare, build-and-push]
+    if: needs.prepare.outputs.is_tag == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to Production (Shanghai)
@@ -283,8 +354,8 @@ jobs:
           script: ${{ secrets.DEPLOY_TWOSOMEREN_SCRIPT }}
 
   deploy-hongkong:
-    needs: build-and-push
-    if: needs.build-and-push.outputs.is_tag == 'true'
+    needs: [prepare, build-and-push]
+    if: needs.prepare.outputs.is_tag == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to Production (Hong Kong)
@@ -297,8 +368,8 @@ jobs:
           script: ${{ secrets.DEPLOY_TWOSOMEREN_HK_SCRIPT }}
 
   cdn-refresh:
-    needs: [build-and-push, deploy-shanghai, deploy-hongkong]
-    if: needs.build-and-push.outputs.is_tag == 'true'
+    needs: [prepare, deploy-shanghai, deploy-hongkong]
+    if: needs.prepare.outputs.is_tag == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Purge CDN cache
