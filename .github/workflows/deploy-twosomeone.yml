@@ -339,6 +339,7 @@ jobs:
           username: ${{ secrets.ALIYUN_CN_USERNAME }}
           port: ${{ secrets.ALIYUN_CN_PORT }}
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+          command_timeout: 20m
           script: /home/leaperone/services/2someren-web/beta/deploy.sh
 
   deploy-shanghai:
@@ -353,6 +354,7 @@ jobs:
           username: ${{ secrets.ALIYUN_CN_USERNAME }}
           port: ${{ secrets.ALIYUN_CN_PORT }}
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+          command_timeout: 20m
           script: ${{ secrets.DEPLOY_TWOSOMEREN_SCRIPT }}
 
   deploy-hongkong:
@@ -367,6 +369,7 @@ jobs:
           username: ${{ secrets.ALIYUN_CN_USERNAME }}
           port: ${{ secrets.ALIYUN_CN_PORT }}
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+          command_timeout: 20m
           script: ${{ secrets.DEPLOY_TWOSOMEREN_HK_SCRIPT }}
 
   cdn-refresh:
