@@ -284,6 +284,7 @@ jobs:
           secrets: |
             sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
             posthog_personal_api_key=${{ secrets.POSTHOG_API_KEY }}
+            next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
 
       - name: Setup Node.js & pnpm
         uses: actions/setup-node@v6
