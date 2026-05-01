@@ -324,6 +324,7 @@ jobs:
       project: twosomeone
       env: ${{ needs.prepare.outputs.deploy_env }}
       runner: '["self-hosted","Linux","X64","china-runner"]'
+      internal: true
     secrets: inherit
 
   deploy-hk-beta:
