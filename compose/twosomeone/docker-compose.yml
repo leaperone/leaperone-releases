@@ -2,7 +2,7 @@ name: twosomeone-${DEPLOY_ENV:-production}
 
 services:
   web:
-    image: registry.cn-shanghai.aliyuncs.com/leaperone/2someren:${IMAGE_TAG:-web-main-latest}
+    image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/2someren:${IMAGE_TAG:-web-main-latest}
     container_name: twosomeone-web-${DEPLOY_ENV:-production}
     ports:
       - "${WEB_PORT:-3000}:3000"

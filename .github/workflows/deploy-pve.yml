@@ -11,10 +11,15 @@ on:
         required: true
         type: string
         description: "Deploy environment (production / beta)"
+      runner:
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+        description: 'Runner labels as JSON array string (e.g. ''["self-hosted","china-runner"]'')'
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     steps:
       - name: Checkout deployment configs
         uses: actions/checkout@v6
