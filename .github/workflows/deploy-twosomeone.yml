@@ -270,7 +270,6 @@ jobs:
           add-hosts: |
             sentry.leaper.one:10.10.10.200
           cache-from: type=registry,ref=10.10.10.200:5000/leaperone/buildcache:web-twosomeone
-          cache-to: type=registry,ref=10.10.10.200:5000/leaperone/buildcache:web-twosomeone,mode=max
           build-args: |
             POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
             NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
