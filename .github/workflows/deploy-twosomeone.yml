@@ -146,6 +146,7 @@ jobs:
         with:
           context: .
           file: apps/web/docker/Dockerfile
+          target: final
           push: false
           load: false
           tags: 2someren:web-pr-verify
@@ -264,6 +265,7 @@ jobs:
           builder: ${{ steps.buildx.outputs.name }}
           context: .
           file: apps/web/docker/Dockerfile
+          target: final
           push: true
           load: false
           tags: ${{ steps.docker-tags.outputs.tags }}
