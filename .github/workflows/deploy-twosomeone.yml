@@ -315,11 +315,14 @@ jobs:
             posthog_cli_project_id=${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
             next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
 
+      - name: Pack source maps (avoid colon-in-filename limitation)
+        run: tar -cf sourcemaps.tar -C ./sourcemaps/next .
+
       - name: Upload source maps artifact
         uses: actions/upload-artifact@v4
         with:
           name: web-sourcemaps-${{ steps.app-sha.outputs.sha }}
-          path: ./sourcemaps/next
+          path: sourcemaps.tar
           retention-days: 1
           if-no-files-found: error
 
@@ -374,7 +377,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: web-sourcemaps-${{ needs.build-and-push.outputs.app_sha }}
-          path: ./sourcemaps
+          path: ./sm-artifact
+
+      - name: Unpack source maps
+        run: mkdir -p ./sourcemaps && tar -xf ./sm-artifact/sourcemaps.tar -C ./sourcemaps
 
       - name: Upload source maps to Sentry
         env:
