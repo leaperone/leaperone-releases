@@ -288,6 +288,41 @@ jobs:
             posthog_cli_project_id=${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
             next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
 
+      - name: Extract source maps from same buildkit cache
+        uses: docker/build-push-action@v6
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          file: apps/web/docker/Dockerfile
+          target: sourcemaps
+          outputs: type=local,dest=./sourcemaps
+          add-hosts: |
+            sentry.leaper.one:10.10.10.200
+          cache-from: type=registry,ref=10.10.10.200:5000/leaperone/buildcache:web-twosomeone
+          build-args: |
+            POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
+            NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
+            NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
+            NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
+            SENTRY_URL=https://sentry.leaper.one
+            SENTRY_ORG=leaperone
+            SENTRY_PROJECT=2someone-web
+            SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}
+            SENTRY_RELEASE=2someone-web@${{ steps.sentry.outputs.release }}
+          secrets: |
+            sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
+            posthog_personal_api_key=${{ secrets.POSTHOG_API_KEY }}
+            posthog_cli_project_id=${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
+            next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
+
+      - name: Upload source maps artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-sourcemaps-${{ steps.app-sha.outputs.sha }}
+          path: ./sourcemaps/next
+          retention-days: 1
+          if-no-files-found: error
+
       - name: Setup Node.js & pnpm
         uses: actions/setup-node@v6
         with:
@@ -319,57 +354,11 @@ jobs:
             echo "Skipping region migration: REGION_DATABASE_URL not set"
           fi
 
-  sourcemaps:
+  upload-sourcemaps:
     needs: [prepare, build-and-push]
     if: needs.prepare.outputs.is_deployable == 'true'
     runs-on: ${{ fromJSON(needs.prepare.outputs.runs_on) }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          token: ${{ secrets.ACCESS_TOKEN }}
-          repository: leaperone/2SOMEone
-          ref: ${{ needs.prepare.outputs.ref }}
-
-      - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          name: pve-builder
-          driver: docker-container
-          cleanup: false
-          buildkitd-config-inline: |
-            [registry."10.10.10.200:5000"]
-              http = true
-              insecure = true
-
-      - name: Extract source maps
-        uses: docker/build-push-action@v6
-        with:
-          builder: ${{ steps.buildx.outputs.name }}
-          context: .
-          file: apps/web/docker/Dockerfile
-          target: sourcemaps
-          outputs: type=local,dest=./sourcemaps
-          add-hosts: |
-            sentry.leaper.one:10.10.10.200
-          cache-from: type=registry,ref=10.10.10.200:5000/leaperone/buildcache:web-twosomeone
-          build-args: |
-            POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
-            NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
-            NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
-            NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
-            SENTRY_URL=https://sentry.leaper.one
-            SENTRY_ORG=leaperone
-            SENTRY_PROJECT=2someone-web
-            SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}
-            SENTRY_RELEASE=2someone-web@${{ needs.build-and-push.outputs.sentry_release }}
-          secrets: |
-            sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
-            posthog_personal_api_key=${{ secrets.POSTHOG_API_KEY }}
-            posthog_cli_project_id=${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
-            next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
-
       - name: Setup Node.js & pnpm
         uses: actions/setup-node@v6
         with:
@@ -381,6 +370,12 @@ jobs:
       - name: Configure pnpm registry mirror (china)
         run: pnpm config set registry https://registry.npmmirror.com/
 
+      - name: Download source maps artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-sourcemaps-${{ needs.build-and-push.outputs.app_sha }}
+          path: ./sourcemaps
+
       - name: Upload source maps to Sentry
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
@@ -390,7 +385,7 @@ jobs:
           RELEASE: 2someone-web@${{ needs.build-and-push.outputs.sentry_release }}
         run: |
           pnpm dlx @sentry/cli@2.58.5 releases new "$RELEASE"
-          pnpm dlx @sentry/cli@2.58.5 sourcemaps upload --release "$RELEASE" ./sourcemaps/next
+          pnpm dlx @sentry/cli@2.58.5 sourcemaps upload --release "$RELEASE" ./sourcemaps
           pnpm dlx @sentry/cli@2.58.5 releases finalize "$RELEASE"
 
       - name: Upload source maps to PostHog
@@ -399,7 +394,7 @@ jobs:
           POSTHOG_CLI_PROJECT_ID: ${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
           POSTHOG_CLI_HOST: https://t.2some.one
         run: |
-          pnpm dlx @posthog/cli@0.7.3 sourcemap upload --directory ./sourcemaps/next --release-name 2SOMEone --release-version "${{ needs.build-and-push.outputs.sentry_release }}"
+          pnpm dlx @posthog/cli@0.7.3 sourcemap upload --directory ./sourcemaps --release-name 2SOMEone --release-version "${{ needs.build-and-push.outputs.sentry_release }}"
 
   deploy-pve:
     needs: [prepare, build-and-push]
