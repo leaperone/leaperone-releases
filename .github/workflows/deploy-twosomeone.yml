@@ -1,4 +1,9 @@
 name: Deploy 2SOMEone
+run-name: >-
+  Deploy 2SOMEone
+  ${{ github.event.client_payload.env || inputs.env || 'production' }}
+  ${{ github.event.client_payload.ref || inputs.ref || 'main' }}
+  [src=${{ github.event.client_payload.source_sha || github.sha }}]
 
 on:
   repository_dispatch:
@@ -21,6 +26,9 @@ on:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     outputs:
       ref: ${{ steps.set-ref.outputs.ref }}
       pr_number: ${{ steps.set-ref.outputs.pr_number }}
@@ -28,12 +36,21 @@ jobs:
       is_tag: ${{ steps.set-ref.outputs.is_tag }}
       deploy_env: ${{ steps.set-ref.outputs.deploy_env }}
       runs_on: ${{ steps.set-ref.outputs.runs_on }}
+      source_sha: ${{ steps.set-ref.outputs.source_sha }}
+      pointed_tag: ${{ steps.detect-tag.outputs.pointed_tag }}
     steps:
       - name: Validate and set ref
         id: set-ref
+        env:
+          RAW_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
         run: |
           REF="${{ github.event.inputs.ref || github.event.client_payload.ref }}"
           ENV_INPUT="${{ github.event.inputs.env || github.event.client_payload.env }}"
+          SOURCE_SHA=""
+          if [[ "$RAW_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            SOURCE_SHA="$RAW_SOURCE_SHA"
+          fi
+          printf 'source_sha=%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
           # Default deploy environment
           DEPLOY_ENV="${ENV_INPUT:-production}"
@@ -125,6 +142,74 @@ jobs:
             echo 'runs_on=["ubuntu-latest"]' >> $GITHUB_OUTPUT
             echo "runs_on: ubuntu-latest"
           fi
+
+      - name: Detect web-v* tag pointing at source_sha
+        id: detect-tag
+        if: github.event_name == 'repository_dispatch' && steps.set-ref.outputs.is_deployable == 'true' && steps.set-ref.outputs.deploy_env == 'beta' && steps.set-ref.outputs.source_sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          SOURCE_SHA: ${{ steps.set-ref.outputs.source_sha }}
+        run: |
+          SOURCE_SHA="$SOURCE_SHA"
+          POINTED_TAG=""
+          deadline=$(( $(date +%s) + 90 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            refs=$(gh api repos/leaperone/2SOMEone/git/matching-refs/tags/web-v --jq '.[]')
+            while IFS= read -r row; do
+              [ -z "$row" ] && continue
+              ref=$(echo "$row" | jq -r '.ref')
+              type=$(echo "$row" | jq -r '.object.type')
+              sha=$(echo "$row" | jq -r '.object.sha')
+              if [ "$type" = "tag" ]; then
+                sha=$(gh api "repos/leaperone/2SOMEone/git/tags/$sha" --jq '.object.sha')
+              fi
+              if [ "$sha" = "$SOURCE_SHA" ]; then
+                POINTED_TAG="${ref#refs/tags/}"
+                break 2
+              fi
+            done <<< "$(echo "$refs" | jq -c '.')"
+            sleep 10
+          done
+          echo "pointed_tag=$POINTED_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for tag-priority deploy
+        if: steps.detect-tag.outputs.pointed_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POINTED_TAG: ${{ steps.detect-tag.outputs.pointed_tag }}
+          SOURCE_SHA: ${{ steps.set-ref.outputs.source_sha }}
+          SELF_RUN: ${{ github.run_id }}
+        run: |
+          POINTED_TAG="$POINTED_TAG"
+          SOURCE_SHA="$SOURCE_SHA"
+          if [[ ! "$POINTED_TAG" =~ ^web-v[0-9]+\.[0-9]+\.[0-9]+$ || ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::warning::Invalid tag-priority inputs; treating as no tag."
+            exit 0
+          fi
+          sleep 30
+          deadline=$(( $(date +%s) + 60 * 60 ))
+          ever_seen=false
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            matching=$(gh run list \
+              -R "$GITHUB_REPOSITORY" \
+              -w "Deploy 2SOMEone" \
+              -e repository_dispatch \
+              -L 100 \
+              --json databaseId,status,displayTitle \
+              | jq \
+                --arg src "[src=$SOURCE_SHA]" \
+                --arg tag " $POINTED_TAG " \
+                '[.[] | select(.databaseId != (env.SELF_RUN | tonumber)) | select(.displayTitle | contains($src)) | select(.displayTitle | contains($tag))]')
+            total=$(echo "$matching" | jq 'length')
+            active=$(echo "$matching" | jq '[.[] | select(.status != "completed")] | length')
+            if [ "$total" -gt 0 ]; then ever_seen=true; fi
+            if [ "$ever_seen" = true ] && [ "$active" = "0" ]; then
+              echo "Tag run finished; proceeding."; exit 0
+            fi
+            echo "matching_total=$total active=$active ever_seen=$ever_seen; waiting..."
+            sleep 30
+          done
+          echo "::warning::Timed out after 60min waiting for tag $POINTED_TAG; proceeding."
 
   verify-pr:
     needs: prepare
