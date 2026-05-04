@@ -35,7 +35,6 @@ jobs:
       is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
       is_tag: ${{ steps.set-ref.outputs.is_tag }}
       deploy_env: ${{ steps.set-ref.outputs.deploy_env }}
-      runs_on: ${{ steps.set-ref.outputs.runs_on }}
       source_sha: ${{ steps.set-ref.outputs.source_sha }}
       pointed_tag: ${{ steps.detect-tag.outputs.pointed_tag }}
     steps:
@@ -132,15 +131,6 @@ jobs:
             echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
             echo "使用指定 ref: $REF"
             IS_DEPLOYABLE=false
-          fi
-
-          # Decide runs_on: deployable production -> self-hosted china-runner; everything else -> ubuntu-latest
-          if [[ "$IS_DEPLOYABLE" == "true" && "$DEPLOY_ENV" == "production" ]]; then
-            echo 'runs_on=["self-hosted","Linux","X64","china-runner"]' >> $GITHUB_OUTPUT
-            echo "runs_on: china-runner (PVE)"
-          else
-            echo 'runs_on=["ubuntu-latest"]' >> $GITHUB_OUTPUT
-            echo "runs_on: ubuntu-latest"
           fi
 
       - name: Detect web-v* tag pointing at source_sha
@@ -242,7 +232,7 @@ jobs:
             NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
             NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
             NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
-            SENTRY_URL=https://sentry.leaper.one
+            SENTRY_URL=https://sentry.leaperone.cn
             SENTRY_ORG=leaperone
             SENTRY_PROJECT=2someone-web
             SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}
@@ -250,7 +240,7 @@ jobs:
   build-and-push:
     needs: prepare
     if: needs.prepare.outputs.is_deployable == 'true'
-    runs-on: ${{ fromJSON(needs.prepare.outputs.runs_on) }}
+    runs-on: ubuntu-latest
     concurrency:
       group: deploy-twosomeone-deployable
       cancel-in-progress: false
@@ -305,32 +295,17 @@ jobs:
           password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
 
       - name: Set up Docker Buildx
-        id: buildx
         uses: docker/setup-buildx-action@v3
-        with:
-          name: pve-builder
-          driver: docker-container
-          cleanup: false
-          buildkitd-config-inline: |
-            [registry."10.10.10.200:5000"]
-              http = true
-              insecure = true
 
       - name: Compute Docker tags
         id: docker-tags
         run: |
           APP_SHA="${{ steps.app-sha.outputs.sha }}"
-          IS_PVE="${{ needs.prepare.outputs.deploy_env == 'production' }}"
           IS_TAG="${{ needs.prepare.outputs.is_tag }}"
           IS_BETA="${{ needs.prepare.outputs.deploy_env == 'beta' }}"
 
           TAGS=""
-          # PVE internal registry: only for production deploys
-          if [ "$IS_PVE" == "true" ]; then
-            TAGS+="10.10.10.200:5000/leaperone/2someren:web-main-latest"$'\n'
-            TAGS+="10.10.10.200:5000/leaperone/2someren:web-${APP_SHA}"$'\n'
-          fi
-          # ACR Shanghai: always (kept as fallback)
+          # ACR Shanghai: always
           TAGS+="registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-main-latest"$'\n'
           TAGS+="registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-${APP_SHA}"$'\n'
           # ACR Hong Kong: tag releases or beta deploys
@@ -347,22 +322,20 @@ jobs:
       - name: Build and Push (deployable)
         uses: docker/build-push-action@v6
         with:
-          builder: ${{ steps.buildx.outputs.name }}
           context: .
           file: apps/web/docker/Dockerfile
           target: final
           push: true
           load: false
           tags: ${{ steps.docker-tags.outputs.tags }}
-          add-hosts: |
-            sentry.leaper.one:10.10.10.200
-          cache-from: type=registry,ref=10.10.10.200:5000/leaperone/buildcache:web-twosomeone
+          cache-from: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:web-twosomeone
+          cache-to: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:web-twosomeone,mode=max,ignore-error=true
           build-args: |
             POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
             NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
             NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
             NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
-            SENTRY_URL=https://sentry.leaper.one
+            SENTRY_URL=https://sentry.leaperone.cn
             SENTRY_ORG=leaperone
             SENTRY_PROJECT=2someone-web
             SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}
@@ -376,20 +349,17 @@ jobs:
       - name: Extract source maps from same buildkit cache
         uses: docker/build-push-action@v6
         with:
-          builder: ${{ steps.buildx.outputs.name }}
           context: .
           file: apps/web/docker/Dockerfile
           target: sourcemaps
           outputs: type=local,dest=./sourcemaps
-          add-hosts: |
-            sentry.leaper.one:10.10.10.200
-          cache-from: type=registry,ref=10.10.10.200:5000/leaperone/buildcache:web-twosomeone
+          cache-from: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:web-twosomeone
           build-args: |
             POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
             NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
             NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
             NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
-            SENTRY_URL=https://sentry.leaper.one
+            SENTRY_URL=https://sentry.leaperone.cn
             SENTRY_ORG=leaperone
             SENTRY_PROJECT=2someone-web
             SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}
@@ -445,7 +415,7 @@ jobs:
   upload-sourcemaps:
     needs: [prepare, build-and-push]
     if: needs.prepare.outputs.is_deployable == 'true'
-    runs-on: ${{ fromJSON(needs.prepare.outputs.runs_on) }}
+    runs-on: ubuntu-latest
     steps:
       - name: Setup Node.js & pnpm
         uses: actions/setup-node@v6
@@ -470,7 +440,7 @@ jobs:
       - name: Upload source maps to Sentry
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_URL: https://sentry.leaper.one
+          SENTRY_URL: https://sentry.leaperone.cn
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: 2someone-web
           RELEASE: 2someone-web@${{ needs.build-and-push.outputs.sentry_release }}
@@ -494,8 +464,8 @@ jobs:
     with:
       project: twosomeone
       env: ${{ needs.prepare.outputs.deploy_env }}
-      runner: '["self-hosted","Linux","X64","china-runner"]'
-      internal: true
+      runner: '["ubuntu-latest"]'
+      internal: false
     secrets: inherit
 
   deploy-hk-beta:
