@@ -392,22 +392,24 @@ jobs:
       - name: Configure pnpm registry mirror (china)
         run: pnpm config set registry https://registry.npmmirror.com/
 
-      - name: Install migration dependencies
-        run: pnpm install --ignore-scripts
-
       - name: Run database migrations
         env:
           TWOSOMEREN_DATABASE_URL: ${{ secrets.TWOSOMEREN_DATABASE_URL }}
           TWOSOMEREN_BILI_DATABASE_URL: ${{ secrets.TWOSOMEREN_BILI_DATABASE_URL }}
           REGION_DATABASE_URL: ${{ secrets.REGION_DATABASE_URL }}
         run: |
+          cd apps/web
+          migrate() {
+            pnpm dlx --package drizzle-kit@0.31.9 --package pg@8.20.0 drizzle-kit migrate --config="$1"
+          }
+
           echo "Running main DB migration..."
-          pnpm --filter 2someone-web db:migrate:main
+          migrate drizzle.config.main.ts
           echo "Running bili DB migration..."
-          pnpm --filter 2someone-web db:migrate:bili
+          migrate drizzle.config.bili.ts
           if [ -n "$REGION_DATABASE_URL" ]; then
             echo "Running region DB migration..."
-            pnpm --filter 2someone-web db:migrate:region
+            migrate drizzle.config.region.ts
           else
             echo "Skipping region migration: REGION_DATABASE_URL not set"
           fi
