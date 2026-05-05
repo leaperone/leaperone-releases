@@ -232,7 +232,7 @@ jobs:
             NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
             NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
             NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
-            SENTRY_URL=https://sentry.leaperone.cn
+            SENTRY_URL=https://sentry.leaper.one
             SENTRY_ORG=leaperone
             SENTRY_PROJECT=2someone-web
             SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}
@@ -335,7 +335,7 @@ jobs:
             NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
             NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
             NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
-            SENTRY_URL=https://sentry.leaperone.cn
+            SENTRY_URL=https://sentry.leaper.one
             SENTRY_ORG=leaperone
             SENTRY_PROJECT=2someone-web
             SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}
@@ -359,7 +359,7 @@ jobs:
             NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
             NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
             NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
-            SENTRY_URL=https://sentry.leaperone.cn
+            SENTRY_URL=https://sentry.leaper.one
             SENTRY_ORG=leaperone
             SENTRY_PROJECT=2someone-web
             SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}
@@ -437,25 +437,36 @@ jobs:
       - name: Unpack source maps
         run: mkdir -p ./sourcemaps && tar -xf ./sm-artifact/sourcemaps.tar -C ./sourcemaps
 
-      - name: Upload source maps to Sentry
+      - name: Upload source maps
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_URL: https://sentry.leaperone.cn
+          SENTRY_URL: https://sentry.leaper.one
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: 2someone-web
-          RELEASE: 2someone-web@${{ needs.build-and-push.outputs.sentry_release }}
-        run: |
-          pnpm dlx @sentry/cli@2.58.5 releases new "$RELEASE"
-          pnpm dlx @sentry/cli@2.58.5 sourcemaps upload --release "$RELEASE" ./sourcemaps
-          pnpm dlx @sentry/cli@2.58.5 releases finalize "$RELEASE"
-
-      - name: Upload source maps to PostHog
-        env:
+          SENTRY_RELEASE: 2someone-web@${{ needs.build-and-push.outputs.sentry_release }}
           POSTHOG_CLI_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           POSTHOG_CLI_PROJECT_ID: ${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
           POSTHOG_CLI_HOST: https://t.2some.one
+          POSTHOG_RELEASE_VERSION: ${{ needs.build-and-push.outputs.sentry_release }}
         run: |
-          pnpm dlx @posthog/cli@0.7.3 sourcemap upload --directory ./sourcemaps --release-name 2SOMEone --release-version "${{ needs.build-and-push.outputs.sentry_release }}"
+          pnpm dlx @posthog/cli@0.7.3 sourcemap upload --directory ./sourcemaps --release-name 2SOMEone --release-version "$POSTHOG_RELEASE_VERSION" &
+          posthog_pid=$!
+
+          (
+            pnpm dlx @sentry/cli@2.58.5 releases new "$SENTRY_RELEASE"
+            pnpm dlx @sentry/cli@2.58.5 sourcemaps upload --release "$SENTRY_RELEASE" ./sourcemaps
+            pnpm dlx @sentry/cli@2.58.5 releases finalize "$SENTRY_RELEASE"
+          ) &
+          sentry_pid=$!
+
+          posthog_status=0
+          sentry_status=0
+          wait "$posthog_pid" || posthog_status=$?
+          wait "$sentry_pid" || sentry_status=$?
+
+          if [ "$posthog_status" -ne 0 ] || [ "$sentry_status" -ne 0 ]; then
+            exit 1
+          fi
 
   deploy-pve:
     needs: [prepare, build-and-push]
