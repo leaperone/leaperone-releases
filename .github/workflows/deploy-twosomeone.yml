@@ -400,7 +400,7 @@ jobs:
         run: |
           cd apps/web
           migrate() {
-            pnpm dlx --package drizzle-kit@0.31.9 --package pg@8.20.0 drizzle-kit migrate --config="$1"
+            pnpm dlx --package drizzle-kit@0.31.9 --package drizzle-orm@0.45.1 --package pg@8.20.0 drizzle-kit migrate --config="$1"
           }
 
           echo "Running main DB migration..."
