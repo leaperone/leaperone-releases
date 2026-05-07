@@ -386,13 +386,10 @@ jobs:
       - name: Setup Node.js & pnpm
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Install pnpm
         run: corepack enable && corepack prepare pnpm@latest --activate
-
-      - name: Configure pnpm registry mirror (china)
-        run: pnpm config set registry https://registry.npmmirror.com/
 
       - name: Run database migrations
         env:
@@ -424,13 +421,10 @@ jobs:
       - name: Setup Node.js & pnpm
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Install pnpm
         run: corepack enable && corepack prepare pnpm@latest --activate
-
-      - name: Configure pnpm registry mirror (china)
-        run: pnpm config set registry https://registry.npmmirror.com/
 
       - name: Download source maps artifact
         uses: actions/download-artifact@v4
