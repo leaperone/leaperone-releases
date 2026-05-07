@@ -236,6 +236,8 @@ jobs:
             SENTRY_ORG=leaperone
             SENTRY_PROJECT=2someone-web
             SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}
+          secrets: |
+            next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
 
   build-and-push:
     needs: prepare
