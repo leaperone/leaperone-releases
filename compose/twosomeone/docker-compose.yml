@@ -10,4 +10,9 @@ services:
       - .env
     volumes:
       - ./alipay-cert:/app/alipay-cert
+    # Web → backend reverse calls on PVE go via host-gateway:
+    # BACKEND_BASE_URL=http://host.docker.internal:3003 (LXC 200 only;
+    # Shanghai / HK web hosts use https://be.2some.ren over the public path).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
