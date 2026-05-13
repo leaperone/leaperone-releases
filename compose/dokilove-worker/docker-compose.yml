@@ -1,0 +1,11 @@
+name: dokilove-worker-${DEPLOY_ENV:-production}
+
+services:
+  worker:
+    image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/dokilove:${WORKER_IMAGE_TAG:-worker-latest}
+    container_name: dokilove-worker-${DEPLOY_ENV:-production}
+    env_file:
+      - .env
+    ports:
+      - '127.0.0.1:${WORKER_PORT:-3100}:3100'
+    restart: unless-stopped
