@@ -6,3 +6,8 @@ services:
       - "9800:3000"
     env_file:
       - dokilove.env
+    environment:
+      NEXT_PUBLIC_SENTRY_DSN: https://__DSN_PLACEHOLDER__@sentry.leaper.one/0
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+      SENTRY_DSN: https://__DSN_PLACEHOLDER__@sentry.leaper.one/0
+      SENTRY_ENVIRONMENT: production
