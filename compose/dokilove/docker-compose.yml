@@ -7,7 +7,7 @@ services:
     env_file:
       - dokilove.env
     environment:
-      NEXT_PUBLIC_SENTRY_DSN: https://__DSN_PLACEHOLDER__@sentry.leaper.one/0
+      NEXT_PUBLIC_SENTRY_DSN: https://ad95f8e28d800b13f55fa2e67e302cb9@sentry.leaper.one/7
       NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
-      SENTRY_DSN: https://__DSN_PLACEHOLDER__@sentry.leaper.one/0
+      SENTRY_DSN: https://ad95f8e28d800b13f55fa2e67e302cb9@sentry.leaper.one/7
       SENTRY_ENVIRONMENT: production
