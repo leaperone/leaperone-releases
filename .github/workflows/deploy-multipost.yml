@@ -163,7 +163,7 @@ jobs:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           POSTHOG_MULTIPOST_ENV_ID: ${{ secrets.POSTHOG_MULTIPOST_ENV_ID }}
           NEXT_PUBLIC_POSTHOG_HOST: https://us.posthog.com
-          NEXT_PUBLIC_SENTRY_DSN: https://<TO_FILL>@s.2some.ren/<PROJECT_ID>
+          NEXT_PUBLIC_SENTRY_DSN: https://422fa55253c74dc835e207a204dc2d16@sentry.leaperone.cn/6
           NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${{ needs.resolve-context.outputs.deploy_env }}
           SENTRY_URL: https://sentry.leaper.one
           SENTRY_ORG: leaperone
@@ -187,7 +187,7 @@ jobs:
       - name: Extract sourcemaps from builder
         if: needs.resolve-context.outputs.build_web == 'true'
         env:
-          NEXT_PUBLIC_SENTRY_DSN: https://<TO_FILL>@s.2some.ren/<PROJECT_ID>
+          NEXT_PUBLIC_SENTRY_DSN: https://422fa55253c74dc835e207a204dc2d16@sentry.leaperone.cn/6
           NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${{ needs.resolve-context.outputs.deploy_env }}
           SENTRY_URL: https://sentry.leaper.one
           SENTRY_ORG: leaperone
