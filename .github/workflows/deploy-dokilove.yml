@@ -103,6 +103,9 @@ jobs:
     needs: resolve-context
     if: needs.resolve-context.outputs.is_deployable == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      app_sha: ${{ steps.app-sha.outputs.sha }}
+      sentry_release: ${{ steps.sentry.outputs.release }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -123,7 +126,36 @@ jobs:
         with:
           version: '2.14.2'
 
+      - name: Compute app SHA
+        id: app-sha
+        run: echo "sha=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Compute Sentry release
+        id: sentry
+        if: needs.resolve-context.outputs.build_web == 'true'
+        run: echo "release=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Validate Sentry auth token & DSN
+        if: needs.resolve-context.outputs.build_web == 'true'
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          NEXT_PUBLIC_SENTRY_DSN: https://__DSN_PLACEHOLDER__@sentry.leaper.one/0
+        run: |
+          test -n "$SENTRY_AUTH_TOKEN" || { echo "SENTRY_AUTH_TOKEN required"; exit 1; }
+          if [[ "$NEXT_PUBLIC_SENTRY_DSN" == *"__DSN_PLACEHOLDER__"* ]]; then
+            echo "NEXT_PUBLIC_SENTRY_DSN still contains __DSN_PLACEHOLDER__"
+            exit 1
+          fi
+
       - name: Build Docker images
+        env:
+          NEXT_PUBLIC_SENTRY_DSN: https://__DSN_PLACEHOLDER__@sentry.leaper.one/0
+          NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+          SENTRY_URL: https://sentry.leaper.one
+          SENTRY_ORG: leaperone
+          SENTRY_PROJECT: dokilove-web
+          SENTRY_RELEASE: dokilove-web@${{ steps.sentry.outputs.release }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: |
           BUILD_SERVICES=""
           if [ "${{ needs.resolve-context.outputs.build_web }}" = "true" ]; then
@@ -138,6 +170,32 @@ jobs:
           fi
           echo "Building services:$BUILD_SERVICES"
           docker compose -f ./docker/docker-compose-build.yml build $BUILD_SERVICES
+
+      - name: Extract sourcemaps from builder
+        if: needs.resolve-context.outputs.build_web == 'true'
+        env:
+          NEXT_PUBLIC_SENTRY_DSN: https://__DSN_PLACEHOLDER__@sentry.leaper.one/0
+          NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+          SENTRY_RELEASE: dokilove-web@${{ steps.sentry.outputs.release }}
+        run: |
+          DOCKER_BUILDKIT=1 docker build -f ./docker/Dockerfile --target sourcemaps \
+            --build-arg NEXT_PUBLIC_SENTRY_DSN="$NEXT_PUBLIC_SENTRY_DSN" \
+            --build-arg NEXT_PUBLIC_SENTRY_ENVIRONMENT="$NEXT_PUBLIC_SENTRY_ENVIRONMENT" \
+            --build-arg SENTRY_RELEASE="$SENTRY_RELEASE" \
+            --progress=plain --output type=local,dest=$RUNNER_TEMP/sourcemaps .
+
+      - name: Pack sourcemaps
+        if: needs.resolve-context.outputs.build_web == 'true'
+        run: tar -cf $RUNNER_TEMP/sourcemaps.tar -C $RUNNER_TEMP/sourcemaps .
+
+      - name: Upload sourcemaps artifact
+        if: needs.resolve-context.outputs.build_web == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dokilove-web-sourcemaps-${{ steps.app-sha.outputs.sha }}
+          path: ${{ runner.temp }}/sourcemaps.tar
+          retention-days: 1
+          if-no-files-found: error
 
       - name: Login to Aliyun Docker Registry (Hong Kong)
         uses: docker/login-action@v3
@@ -176,6 +234,39 @@ jobs:
             echo "Pushing worker image..."
             push_image "worker-latest"
           fi
+
+  upload-sourcemaps:
+    needs: [resolve-context, build-and-push]
+    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.build_web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Enable pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - name: Download sourcemaps
+        uses: actions/download-artifact@v4
+        with:
+          name: dokilove-web-sourcemaps-${{ needs.build-and-push.outputs.app_sha }}
+          path: ./sm-artifact
+
+      - name: Unpack
+        run: mkdir -p ./sourcemaps && tar -xf ./sm-artifact/sourcemaps.tar -C ./sourcemaps
+
+      - name: Upload to Sentry
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_URL: https://sentry.leaper.one
+          SENTRY_ORG: leaperone
+          SENTRY_PROJECT: dokilove-web
+          SENTRY_RELEASE: dokilove-web@${{ needs.build-and-push.outputs.sentry_release }}
+        run: |
+          pnpm dlx @sentry/cli@2.58.5 releases new "$SENTRY_RELEASE"
+          pnpm dlx @sentry/cli@2.58.5 sourcemaps upload --release "$SENTRY_RELEASE" ./sourcemaps
+          pnpm dlx @sentry/cli@2.58.5 releases finalize "$SENTRY_RELEASE"
 
   migrate-production:
     needs: [resolve-context, build-and-push]
