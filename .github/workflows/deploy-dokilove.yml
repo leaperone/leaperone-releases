@@ -325,6 +325,13 @@ jobs:
   deploy-pve:
     needs: [resolve-context, migrate-production]
     if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_pve == 'true' && needs.resolve-context.outputs.build_worker == 'true'
+    # Serialize with deploy-pve-tgbot: both deploy to the same PVE app LXC and
+    # pull layer-sharing images; concurrent `docker compose pull` races the
+    # containerd overlayfs snapshotter ("failed to extract layer ... link ...").
+    concurrency:
+      group: dokilove-pve-deploy
+      cancel-in-progress: false
+      queue: max
     uses: ./.github/workflows/deploy-pve.yml
     with:
       project: dokilove-worker
@@ -334,6 +341,10 @@ jobs:
   deploy-pve-tgbot:
     needs: [resolve-context, migrate-production]
     if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_pve == 'true' && needs.resolve-context.outputs.build_tgbot == 'true'
+    concurrency:
+      group: dokilove-pve-deploy
+      cancel-in-progress: false
+      queue: max
     uses: ./.github/workflows/deploy-pve.yml
     with:
       project: dokilove-tg-bot
