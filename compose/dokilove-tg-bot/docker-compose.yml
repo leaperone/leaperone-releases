@@ -1,0 +1,11 @@
+name: dokilove-tg-bot-${DEPLOY_ENV:-production}
+
+services:
+  tg-bot:
+    image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/dokilove:${TGBOT_IMAGE_TAG:-tg-bot-latest}
+    container_name: dokilove-tg-bot-${DEPLOY_ENV:-production}
+    env_file:
+      - .env
+    ports:
+      - '127.0.0.1:${TGBOT_PORT:-3200}:3200'
+    restart: unless-stopped
