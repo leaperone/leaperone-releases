@@ -15,6 +15,7 @@ jobs:
       deploy_pve: ${{ steps.resolve.outputs.deploy_pve }}
       build_web: ${{ steps.resolve.outputs.build_web }}
       build_worker: ${{ steps.resolve.outputs.build_worker }}
+      build_tgbot: ${{ steps.resolve.outputs.build_tgbot }}
     steps:
       - name: Resolve deploy context
         id: resolve
@@ -42,11 +43,12 @@ jobs:
           fi
 
           if [ -z "$BUILD_TARGETS" ]; then
-            BUILD_TARGETS="web,worker"
+            BUILD_TARGETS="web,worker,tg-bot"
           fi
 
           BUILD_WEB="false"
           BUILD_WORKER="false"
+          BUILD_TGBOT="false"
 
           if [[ "$BUILD_TARGETS" == *"web"* ]]; then
             BUILD_WEB="true"
@@ -54,6 +56,10 @@ jobs:
 
           if [[ "$BUILD_TARGETS" == *"worker"* ]]; then
             BUILD_WORKER="true"
+          fi
+
+          if [[ "$BUILD_TARGETS" == *"tg-bot"* ]]; then
+            BUILD_TGBOT="true"
           fi
 
           if [ "$DEPLOY_HK" = "false" ] && [ "$DEPLOY_PVE" = "false" ]; then
@@ -98,6 +104,7 @@ jobs:
           echo "deploy_pve=$DEPLOY_PVE" >> "$GITHUB_OUTPUT"
           echo "build_web=$BUILD_WEB" >> "$GITHUB_OUTPUT"
           echo "build_worker=$BUILD_WORKER" >> "$GITHUB_OUTPUT"
+          echo "build_tgbot=$BUILD_TGBOT" >> "$GITHUB_OUTPUT"
 
   build-and-push:
     needs: resolve-context
@@ -163,6 +170,9 @@ jobs:
           fi
           if [ "${{ needs.resolve-context.outputs.build_worker }}" = "true" ]; then
             BUILD_SERVICES="$BUILD_SERVICES dokilove-worker"
+          fi
+          if [ "${{ needs.resolve-context.outputs.build_tgbot }}" = "true" ]; then
+            BUILD_SERVICES="$BUILD_SERVICES dokilove-tg-bot"
           fi
           if [ -z "${BUILD_SERVICES// }" ]; then
             echo "No build services selected"
@@ -233,6 +243,11 @@ jobs:
           if [ "${{ needs.resolve-context.outputs.build_worker }}" = "true" ]; then
             echo "Pushing worker image..."
             push_image "worker-latest"
+          fi
+
+          if [ "${{ needs.resolve-context.outputs.build_tgbot }}" = "true" ]; then
+            echo "Pushing tg-bot image..."
+            push_image "tg-bot-latest"
           fi
 
   upload-sourcemaps:
@@ -313,5 +328,14 @@ jobs:
     uses: ./.github/workflows/deploy-pve.yml
     with:
       project: dokilove-worker
+      env: production
+    secrets: inherit
+
+  deploy-pve-tgbot:
+    needs: [resolve-context, migrate-production]
+    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_pve == 'true' && needs.resolve-context.outputs.build_tgbot == 'true'
+    uses: ./.github/workflows/deploy-pve.yml
+    with:
+      project: dokilove-tg-bot
       env: production
     secrets: inherit
