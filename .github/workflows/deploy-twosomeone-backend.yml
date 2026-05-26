@@ -143,54 +143,22 @@ jobs:
           cache-from: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:backend-twosomeone
           cache-to: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:backend-twosomeone,mode=max,ignore-error=true
 
-  migrate:
+  # Wait for web's migrate job to finish so backend never boots against an un-migrated schema.
+  # Atlas-era migration is owned solely by web's deploy-twosomeone.yml; backend should not
+  # run migrations itself (single-owner principle, see 2SOMEone issue #344 follow-up).
+  await-migrate:
     needs: [prepare, build-and-push]
     if: needs.prepare.outputs.is_deployable == 'true'
     runs-on: ubuntu-latest
-    # Serialize against web's migration job to avoid drizzle-kit lock races.
     concurrency:
       group: deploy-twosomeone-migrate
       cancel-in-progress: false
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          token: ${{ secrets.ACCESS_TOKEN }}
-          repository: leaperone/2SOMEone
-          ref: ${{ needs.prepare.outputs.ref }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-
-      - name: Install pnpm
-        run: corepack enable && corepack prepare pnpm@latest --activate
-
-      - name: Run database migrations
-        env:
-          TWOSOMEREN_DATABASE_URL: ${{ secrets.TWOSOMEREN_DATABASE_URL }}
-          TWOSOMEREN_BILI_DATABASE_URL: ${{ secrets.TWOSOMEREN_BILI_DATABASE_URL }}
-          REGION_DATABASE_URL: ${{ secrets.REGION_DATABASE_URL }}
-        run: |
-          cd apps/web
-          migrate() {
-            pnpm dlx --package drizzle-kit@0.31.9 --package drizzle-orm@0.45.1 --package pg@8.20.0 drizzle-kit migrate --config="$1"
-          }
-
-          echo "Running main DB migration..."
-          migrate drizzle.config.main.ts
-          echo "Running bili DB migration..."
-          migrate drizzle.config.bili.ts
-          if [ -n "$REGION_DATABASE_URL" ]; then
-            echo "Running region DB migration..."
-            migrate drizzle.config.region.ts
-          else
-            echo "Skipping region migration: REGION_DATABASE_URL not set"
-          fi
+      - name: No-op (serialize against web's migrate job)
+        run: echo "Waited for deploy-twosomeone-migrate group. backend runtime schema check (apps/backend/src/index.ts) is the secondary safety net."
 
   deploy-pve:
-    needs: [prepare, build-and-push, migrate]
+    needs: [prepare, build-and-push, await-migrate]
     if: needs.prepare.outputs.is_deployable == 'true'
     uses: ./.github/workflows/deploy-pve.yml
     with:

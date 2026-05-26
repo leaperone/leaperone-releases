@@ -139,24 +139,28 @@ jobs:
         if: steps.set-ref.outputs.is_deployable == 'true'
         run: corepack enable && corepack prepare pnpm@latest --activate
 
-      - name: Install migration dependencies
+      - name: Install Atlas Community
         if: steps.set-ref.outputs.is_deployable == 'true'
-        run: pnpm install --ignore-scripts
+        run: curl -sSf https://atlasgo.sh | sh -s -- -y --community -b /usr/local/bin
 
-      - name: Run database migrations
+      - name: Run database migrations (Atlas)
         if: steps.set-ref.outputs.is_deployable == 'true'
         env:
           TWOSOMEREN_DATABASE_URL: ${{ secrets.TWOSOMEREN_DATABASE_URL }}
           TWOSOMEREN_BILI_DATABASE_URL: ${{ secrets.TWOSOMEREN_BILI_DATABASE_URL }}
           REGION_DATABASE_URL: ${{ secrets.REGION_DATABASE_URL }}
         run: |
+          cd apps/web
+
           echo "Running main DB migration..."
-          pnpm --filter 2someone-web db:migrate:main
+          atlas migrate apply --env=production --config="file://atlas/main/atlas.hcl"
+
           echo "Running bili DB migration..."
-          pnpm --filter 2someone-web db:migrate:bili
+          atlas migrate apply --env=production --config="file://atlas/bili/atlas.hcl"
+
           if [ -n "$REGION_DATABASE_URL" ]; then
             echo "Running region DB migration..."
-            pnpm --filter 2someone-web db:migrate:region
+            atlas migrate apply --env=production --config="file://atlas/region/atlas.hcl"
           else
             echo "Skipping region migration: REGION_DATABASE_URL not set"
           fi
