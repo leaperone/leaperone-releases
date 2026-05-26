@@ -298,10 +298,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install pnpm
-        run: corepack enable && corepack prepare pnpm@10.18.3 --activate
+        run: corepack enable && corepack prepare pnpm@11.3.0 --activate
 
       - name: Run Database Migrations
         run: |
