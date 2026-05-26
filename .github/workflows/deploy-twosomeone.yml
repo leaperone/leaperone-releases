@@ -383,32 +383,26 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-      - name: Setup Node.js & pnpm
-        uses: actions/setup-node@v6
-        with:
-          node-version: "22"
+      - name: Install Atlas Community
+        run: curl -sSf https://atlasgo.sh | sh -s -- -y --community -b /usr/local/bin
 
-      - name: Install pnpm
-        run: corepack enable && corepack prepare pnpm@latest --activate
-
-      - name: Run database migrations
+      - name: Run database migrations (Atlas)
         env:
           TWOSOMEREN_DATABASE_URL: ${{ secrets.TWOSOMEREN_DATABASE_URL }}
           TWOSOMEREN_BILI_DATABASE_URL: ${{ secrets.TWOSOMEREN_BILI_DATABASE_URL }}
           REGION_DATABASE_URL: ${{ secrets.REGION_DATABASE_URL }}
         run: |
           cd apps/web
-          migrate() {
-            pnpm dlx --package drizzle-kit@0.31.9 --package drizzle-orm@0.45.1 --package pg@8.20.0 drizzle-kit migrate --config="$1"
-          }
 
           echo "Running main DB migration..."
-          migrate drizzle.config.main.ts
+          atlas migrate apply --env=production --config="file://atlas/main/atlas.hcl"
+
           echo "Running bili DB migration..."
-          migrate drizzle.config.bili.ts
+          atlas migrate apply --env=production --config="file://atlas/bili/atlas.hcl"
+
           if [ -n "$REGION_DATABASE_URL" ]; then
             echo "Running region DB migration..."
-            migrate drizzle.config.region.ts
+            atlas migrate apply --env=production --config="file://atlas/region/atlas.hcl"
           else
             echo "Skipping region migration: REGION_DATABASE_URL not set"
           fi
