@@ -1,22 +1,30 @@
-services:
-  # web:
-  #   image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/multipost:${IMAGE_TAG:-latest}
-  #   container_name: multipost-web-${DEPLOY_ENV:-production}
-  #   ports:
-  #     - "${WEB_PORT:-3000}:3000"
-  #   env_file:
-  #     - .env
-  #   restart: unless-stopped
+name: multipost-${DEPLOY_ENV:-production}
 
-  # backend:
-  #   image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/multipost:${BACKEND_IMAGE_TAG:-backend-latest}
-  #   container_name: multipost-backend-${DEPLOY_ENV:-production}
-  #   env_file:
-  #     - .env
-  #   environment:
-  #     MODE: ${MODE:-production}
-  #     PORT: ${BACKEND_PORT:-9000}
-  #   restart: unless-stopped
+services:
+  web:
+    image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/multipost:${IMAGE_TAG:-latest}
+    container_name: multipost-web-${DEPLOY_ENV:-production}
+    ports:
+      - "${WEB_PORT:-9900}:3000"
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  backend:
+    image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/multipost:${BACKEND_IMAGE_TAG:-backend-latest}
+    container_name: multipost-backend-${DEPLOY_ENV:-production}
+    env_file:
+      - .env
+    environment:
+      MODE: ${MODE:-production}
+      PORT: ${BACKEND_PORT:-9000}
+    restart: unless-stopped
+    # Default disabled to prevent HK + PVE backends both polling the shared multipost_db
+    # cron queue. Enable at cutover with:
+    #   docker compose --profile backend up -d backend
+    profiles: ["backend"]
 
   video-stt-worker:
     image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/multipost:${VIDEO_STT_WORKER_IMAGE_TAG:-video-stt-worker-latest}
