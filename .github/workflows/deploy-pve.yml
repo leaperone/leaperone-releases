@@ -48,4 +48,5 @@ jobs:
           username: ${{ secrets.PVE_APP_USERNAME }}
           key: ${{ secrets.PVE_APP_SSH_KEY }}
           port: ${{ inputs.internal && secrets.PVE_APP_PORT_INTERNAL || secrets.PVE_APP_PORT }}
+          command_timeout: 20m
           script: /opt/apps/bin/deploy.sh ${{ inputs.project }} ${{ inputs.env }}
