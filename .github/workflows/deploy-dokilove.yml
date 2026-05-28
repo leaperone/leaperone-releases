@@ -308,26 +308,26 @@ jobs:
           pnpm install --filter @dokilove/web
           DATABASE_URL="${{ secrets.DOKILOVE_DATABASE_URL }}" pnpm --filter @dokilove/web db:migrate
 
-  deploy-hk:
+  deploy-pve-web:
     needs: [resolve-context, migrate-production]
-    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_hk == 'true' && needs.resolve-context.outputs.build_web == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy to HK production
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.ALIYUN_HK_HOST }}
-          username: ${{ secrets.ALIYUN_CN_USERNAME }}
-          port: ${{ secrets.ALIYUN_CN_PORT }}
-          key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
-          script: ${{ secrets.DEPLOY_DOKILOVE_SCRIPT }}
+    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_pve == 'true' && needs.resolve-context.outputs.build_web == 'true'
+    # Serialize with deploy-pve-worker / deploy-pve-tgbot: all three deploy to
+    # the same PVE app LXC and pull layer-sharing images; concurrent
+    # `docker compose pull` races the containerd overlayfs snapshotter
+    # ("failed to extract layer ... link ...").
+    concurrency:
+      group: dokilove-pve-deploy
+      cancel-in-progress: false
+      queue: max
+    uses: ./.github/workflows/deploy-pve.yml
+    with:
+      project: dokilove
+      env: production
+    secrets: inherit
 
-  deploy-pve:
+  deploy-pve-worker:
     needs: [resolve-context, migrate-production]
     if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_pve == 'true' && needs.resolve-context.outputs.build_worker == 'true'
-    # Serialize with deploy-pve-tgbot: both deploy to the same PVE app LXC and
-    # pull layer-sharing images; concurrent `docker compose pull` races the
-    # containerd overlayfs snapshotter ("failed to extract layer ... link ...").
     concurrency:
       group: dokilove-pve-deploy
       cancel-in-progress: false
