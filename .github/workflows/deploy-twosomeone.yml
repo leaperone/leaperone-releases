@@ -299,6 +299,24 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Restore Next.js build cache
+        id: nextcache
+        uses: actions/cache@v4
+        with:
+          path: .docker-cache/next
+          key: web-buildcache-deploy-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            web-buildcache-deploy-${{ runner.os }}-
+
+      - name: Inject build cache into buildkit
+        uses: reproducible-containers/buildkit-cache-dance@v3.1.2
+        with:
+          scratch-dir: ${{ runner.temp }}/buildkit-cache-dance
+          cache-map: |
+            {
+              ".docker-cache/next": { "target": "/app/apps/web/.next/cache", "id": "next-2someone-web" }
+            }
+
       - name: Compute Docker tags
         id: docker-tags
         run: |
@@ -330,8 +348,8 @@ jobs:
           push: true
           load: false
           tags: ${{ steps.docker-tags.outputs.tags }}
-          cache-from: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:web-twosomeone
-          cache-to: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:web-twosomeone,mode=max,ignore-error=true
+          cache-from: type=gha,scope=web-twosomeone-deploy
+          cache-to: type=gha,scope=web-twosomeone-deploy,mode=max,ignore-error=true
           build-args: |
             POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
             NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
@@ -355,7 +373,6 @@ jobs:
           file: apps/web/docker/Dockerfile
           target: sourcemaps
           outputs: type=local,dest=./sourcemaps
-          cache-from: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:web-twosomeone
           build-args: |
             POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
             NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
