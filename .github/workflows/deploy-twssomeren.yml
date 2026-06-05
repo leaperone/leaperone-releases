@@ -137,7 +137,7 @@ jobs:
 
       - name: Install pnpm
         if: steps.set-ref.outputs.is_deployable == 'true'
-        run: corepack enable && corepack prepare pnpm@latest --activate
+        run: corepack enable && corepack prepare pnpm@11.5.2 --activate
 
       - name: Install Atlas Community
         if: steps.set-ref.outputs.is_deployable == 'true'
