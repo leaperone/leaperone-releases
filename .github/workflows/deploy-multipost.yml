@@ -224,7 +224,8 @@ jobs:
         env:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           POSTHOG_MULTIPOST_ENV_ID: ${{ secrets.POSTHOG_MULTIPOST_ENV_ID }}
-          NEXT_PUBLIC_POSTHOG_HOST: https://us.posthog.com
+          NEXT_PUBLIC_POSTHOG_KEY: phc_szGHmzMPL2vkmxOkrB120T4pSqq5WJWZdALmf1KCzdi
+          NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.one
           NEXT_PUBLIC_SENTRY_DSN: https://422fa55253c74dc835e207a204dc2d16@sentry.leaper.one/6
           NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${{ needs.resolve-context.outputs.deploy_env }}
           SENTRY_URL: https://sentry.leaper.one
@@ -258,7 +259,8 @@ jobs:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           POSTHOG_MULTIPOST_ENV_ID: ${{ secrets.POSTHOG_MULTIPOST_ENV_ID }}
-          NEXT_PUBLIC_POSTHOG_HOST: https://us.posthog.com
+          NEXT_PUBLIC_POSTHOG_KEY: phc_szGHmzMPL2vkmxOkrB120T4pSqq5WJWZdALmf1KCzdi
+          NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.one
         run: |
           printf '%s' "$SENTRY_AUTH_TOKEN" > /tmp/sentry_auth_token
           DOCKER_BUILDKIT=1 docker build \
@@ -272,6 +274,7 @@ jobs:
             --build-arg SENTRY_RELEASE="$SENTRY_RELEASE" \
             --build-arg POSTHOG_API_KEY="$POSTHOG_API_KEY" \
             --build-arg POSTHOG_MULTIPOST_ENV_ID="$POSTHOG_MULTIPOST_ENV_ID" \
+            --build-arg NEXT_PUBLIC_POSTHOG_KEY="$NEXT_PUBLIC_POSTHOG_KEY" \
             --build-arg NEXT_PUBLIC_POSTHOG_HOST="$NEXT_PUBLIC_POSTHOG_HOST" \
             --secret id=sentry_auth_token,src=/tmp/sentry_auth_token \
             --progress=plain \
