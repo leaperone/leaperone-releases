@@ -424,6 +424,141 @@ jobs:
             echo "Skipping region migration: REGION_DATABASE_URL not set"
           fi
 
+  # Production schema-drift gate. Runs AFTER build-and-push has applied migrations,
+  # so prod should now be fully synced with the drizzle source-of-truth. A diff here
+  # means the migration under-covered the schema change or prod drifted out-of-band;
+  # either way we must NOT roll new containers onto a divergent DB, so this job hard-
+  # fails and deploy-shanghai/deploy-hongkong (which `needs` it) are blocked.
+  #
+  # Running post-apply (rather than as a standalone scheduled monitor) deliberately
+  # avoids the old false-positive where `main` runs ahead of prod between a migration
+  # merging and the next release applying it — by this point the apply has happened.
+  drift-check:
+    needs: [prepare, build-and-push]
+    if: needs.prepare.outputs.is_deployable == 'true' && needs.prepare.outputs.is_tag == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: dev
+          POSTGRES_DB: dev
+        ports:
+          - 5432:5432
+        options: --health-cmd "pg_isready -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - name: Checkout 2SOMEone
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/2SOMEone
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@11.5.2 --activate
+
+      - name: Install dependencies
+        # Root install (no --filter) so pnpm sees the full workspace; drizzle-kit
+        # is needed by scripts/atlas-build-source.sh to regenerate _source.sql.
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Atlas Community
+        run: curl -sSf https://atlasgo.sh | sh -s -- -y --community -b /usr/local/bin
+
+      - name: Build atlas source files
+        working-directory: apps/web
+        run: bash scripts/atlas-build-source.sh
+
+      - name: Schema drift check (main)
+        working-directory: apps/web
+        env:
+          TWOSOMEREN_DATABASE_URL: ${{ secrets.TWOSOMEREN_DATABASE_URL }}
+          ATLAS_DEV_URL: "postgres://postgres:dev@localhost:5432/dev?sslmode=disable&search_path=public"
+        run: |
+          # set +e so a connection/parse/community-edition failure stays distinguishable
+          # from genuine schema drift (an empty `out` would otherwise read as "drift").
+          set +e
+          # UserSummary_MV is an out-of-band materialized view (.existing() in drizzle,
+          # absent from _source.sql). Atlas community can't diff matviews; exclude it or
+          # the check false-positives. See 2SOMEone#364.
+          out=$(atlas schema diff \
+            --from "file://atlas/main/_source.sql?format=postgres" \
+            --to "$TWOSOMEREN_DATABASE_URL" \
+            --dev-url "$ATLAS_DEV_URL" \
+            --exclude "drizzle.*" \
+            --exclude "public.UserSummary_MV" 2>&1)
+          rc=$?
+          echo "$out"
+          if [ $rc -ne 0 ]; then
+            echo "::error::atlas schema diff (main) FAILED to run (exit $rc) — atlas/connection error, NOT drift. See output above."
+            exit 1
+          fi
+          if ! echo "$out" | grep -q "Schemas are synced"; then
+            echo "::error::Main schema drift after migrate apply — prod diverges from drizzle source-of-truth. Blocking deploy. Reconcile drizzle schema / migrations / prod."
+            exit 1
+          fi
+
+      - name: Schema drift check (region)
+        working-directory: apps/web
+        env:
+          REGION_DATABASE_URL: ${{ secrets.REGION_DATABASE_URL }}
+          ATLAS_DEV_URL: "postgres://postgres:dev@localhost:5432/dev?sslmode=disable&search_path=public"
+        run: |
+          # Mirror build-and-push: region is optional, skip cleanly when unconfigured.
+          if [ -z "$REGION_DATABASE_URL" ]; then
+            echo "Skipping region drift check: REGION_DATABASE_URL not set"
+            exit 0
+          fi
+          set +e
+          out=$(atlas schema diff \
+            --from "file://atlas/region/_source.sql?format=postgres" \
+            --to "$REGION_DATABASE_URL" \
+            --dev-url "$ATLAS_DEV_URL" \
+            --exclude "drizzle.*" 2>&1)
+          rc=$?
+          echo "$out"
+          if [ $rc -ne 0 ]; then
+            echo "::error::atlas schema diff (region) FAILED to run (exit $rc) — atlas/connection error, NOT drift. See output above."
+            exit 1
+          fi
+          if ! echo "$out" | grep -q "Schemas are synced"; then
+            echo "::error::Region schema drift after migrate apply — prod diverges from source. Blocking deploy."
+            exit 1
+          fi
+
+      - name: Schema drift check (bili)
+        working-directory: apps/web
+        env:
+          TWOSOMEREN_BILI_DATABASE_URL: ${{ secrets.TWOSOMEREN_BILI_DATABASE_URL }}
+          ATLAS_DEV_URL: "postgres://postgres:dev@localhost:5432/dev?sslmode=disable&search_path=public"
+        run: |
+          set +e
+          # Out-of-band materialized views (.existing() in drizzle, absent from
+          # _source.sql). Atlas community can't diff matviews; exclude them. See 2SOMEone#364.
+          out=$(atlas schema diff \
+            --from "file://atlas/bili/_source.sql?format=postgres" \
+            --to "$TWOSOMEREN_BILI_DATABASE_URL" \
+            --dev-url "$ATLAS_DEV_URL" \
+            --exclude "drizzle.*" \
+            --exclude "public.LiveSession_MV" \
+            --exclude "public.GiftDailySummary_MV" \
+            --exclude "public.GiftTotalSummary_MV" 2>&1)
+          rc=$?
+          echo "$out"
+          if [ $rc -ne 0 ]; then
+            echo "::error::atlas schema diff (bili) FAILED to run (exit $rc) — atlas/connection error, NOT drift. See output above."
+            exit 1
+          fi
+          if ! echo "$out" | grep -q "Schemas are synced"; then
+            echo "::error::Bili schema drift after migrate apply — prod diverges from source. Blocking deploy."
+            exit 1
+          fi
+
   upload-sourcemaps:
     needs: [prepare, build-and-push]
     if: needs.prepare.outputs.is_deployable == 'true'
@@ -504,7 +639,7 @@ jobs:
           script: /home/leaperone/services/2someren-web/beta/deploy.sh
 
   deploy-shanghai:
-    needs: [prepare, build-and-push]
+    needs: [prepare, build-and-push, drift-check]
     if: needs.prepare.outputs.is_tag == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -519,7 +654,7 @@ jobs:
           script: ${{ secrets.DEPLOY_TWOSOMEREN_SCRIPT }}
 
   deploy-hongkong:
-    needs: [prepare, build-and-push]
+    needs: [prepare, build-and-push, drift-check]
     if: needs.prepare.outputs.is_tag == 'true'
     runs-on: ubuntu-latest
     steps:
