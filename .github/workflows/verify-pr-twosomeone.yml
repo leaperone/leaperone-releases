@@ -1,0 +1,107 @@
+name: Verify PR 2SOMEone
+run-name: >-
+  🔎 PR Check 2SOMEone · ${{ github.event.client_payload.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [pr-check][src=${{ github.event.client_payload.source_sha || github.sha }}]
+
+on:
+  repository_dispatch:
+    types: [verify-pr-twosomeone]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'Pull request number to verify'
+        required: false
+      ref:
+        description: 'Ref to verify (for example refs/pull/123/merge or 123/merge)'
+        required: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.set-ref.outputs.ref }}
+      pr_number: ${{ steps.set-ref.outputs.pr_number }}
+      deploy_env: ${{ steps.set-ref.outputs.deploy_env }}
+    steps:
+      - name: Resolve PR ref
+        id: set-ref
+        run: |
+          PR_INPUT="${{ inputs.pr || github.event.client_payload.pr || github.event.client_payload.pr_number }}"
+          REF="${{ inputs.ref || github.event.client_payload.ref }}"
+          PR_NUMBER=""
+
+          if [ -n "$PR_INPUT" ]; then
+            if [[ ! "$PR_INPUT" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: pr must be a pull request number, got: $PR_INPUT" >&2
+              exit 1
+            fi
+            PR_NUMBER="$PR_INPUT"
+            RESOLVED_REF="refs/pull/${PR_NUMBER}/merge"
+            echo "使用 PR #${PR_NUMBER} 的 merge ref"
+          elif [[ "$REF" =~ ^refs/pull/([0-9]+)/merge$ ]]; then
+            PR_NUMBER="${BASH_REMATCH[1]}"
+            RESOLVED_REF="$REF"
+            echo "检测到 PR merge ref: $REF"
+          elif [[ "$REF" =~ ^([0-9]+)/merge$ ]]; then
+            PR_NUMBER="${BASH_REMATCH[1]}"
+            RESOLVED_REF="refs/pull/${PR_NUMBER}/merge"
+            echo "检测到 PR merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
+          elif [[ "$REF" == *"/merge"* ]]; then
+            PR_NUMBER=$(printf '%s' "$REF" | grep -oE '[0-9]+' | head -1)
+            if [ -z "$PR_NUMBER" ]; then
+              echo "ERROR: could not extract PR number from ref: $REF" >&2
+              exit 1
+            fi
+            RESOLVED_REF="refs/pull/${PR_NUMBER}/merge"
+            echo "检测到 merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
+          elif [ -n "$REF" ]; then
+            if [[ "$REF" == "main" || "$REF" == "refs/heads/main" || "$REF" =~ ^(web-)?v[0-9]+\.[0-9]+\.[0-9]+ || "$REF" =~ ^refs/tags/ ]]; then
+              echo "ERROR: verify-pr-twosomeone only verifies non-deploy refs. Got deployable ref: $REF" >&2
+              exit 1
+            fi
+            RESOLVED_REF="$REF"
+            echo "使用指定 ref 做 PR 验证: $REF"
+          else
+            echo "ERROR: provide pr or ref for verify-pr-twosomeone" >&2
+            exit 1
+          fi
+
+          echo "ref=$RESOLVED_REF" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "deploy_env=beta" >> "$GITHUB_OUTPUT"
+
+  verify-pr:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/2SOMEone
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build (non-deployable verification)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/docker/Dockerfile
+          target: final
+          push: false
+          load: false
+          tags: 2someren:web-pr-verify
+          cache-from: type=gha,scope=web-twosomeone-pr
+          cache-to: type=gha,scope=web-twosomeone-pr,mode=max
+          build-args: |
+            POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
+            NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
+            NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
+            NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
+            SENTRY_URL=https://sentry.leaper.one
+            SENTRY_ORG=leaperone
+            SENTRY_PROJECT=2someone-web
+            SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}
+          secrets: |
+            next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}

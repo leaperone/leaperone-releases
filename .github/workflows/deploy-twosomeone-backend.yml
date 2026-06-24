@@ -1,9 +1,6 @@
 name: Deploy 2SOMEone Backend
 run-name: >-
-  Deploy 2SOMEone Backend
-  ${{ github.event.client_payload.env || inputs.env || 'production' }}
-  ${{ github.event.client_payload.ref || inputs.ref || 'main' }}
-  [src=${{ github.event.client_payload.source_sha || github.sha }}]
+  🚀 Deploy 2SOMEone Backend · ${{ github.event.client_payload.env || inputs.env || 'production' }} · ${{ github.event.client_payload.message || inputs.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || inputs.env || 'production' }}]
 
 on:
   repository_dispatch:

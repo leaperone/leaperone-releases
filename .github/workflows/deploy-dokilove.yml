@@ -1,4 +1,6 @@
 name: Deploy DokiLove
+run-name: >-
+  🚀 Deploy DokiLove · ${{ github.event.client_payload.env || inputs.env || 'production' }} · ${{ github.event.client_payload.message || inputs.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || inputs.env || 'production' }}]
 
 on:
   repository_dispatch:
@@ -24,7 +26,6 @@ jobs:
           TARGETS="${{ github.event.client_payload.targets }}"
           BUILD_TARGETS="${{ github.event.client_payload.build_targets }}"
 
-          PR_NUMBER=""
           IS_DEPLOYABLE="true"
 
           if [ -z "$TARGETS" ]; then
@@ -63,8 +64,8 @@ jobs:
           fi
 
           if [ "$DEPLOY_HK" = "false" ] && [ "$DEPLOY_PVE" = "false" ]; then
-            IS_DEPLOYABLE="false"
-            echo "No valid deploy targets resolved from: $TARGETS"
+            echo "ERROR: no valid deploy targets resolved from: $TARGETS" >&2
+            exit 1
           fi
 
           if [ -z "$REF" ]; then
@@ -73,32 +74,19 @@ jobs:
           elif [[ "$REF" == "main" ]] || [[ "$REF" == "refs/heads/main" ]]; then
             RESOLVED_REF="$REF"
             echo "使用 main 分支: $REF"
-          elif [[ "$REF" =~ ^([0-9]+)/merge ]]; then
-            PR_NUMBER="${BASH_REMATCH[1]}"
-            RESOLVED_REF="refs/pull/${PR_NUMBER}/merge"
-            IS_DEPLOYABLE="false"
-            echo "检测到 PR merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
-          elif [[ "$REF" == *"/merge"* ]]; then
-            PR_NUMBER=$(printf '%s' "$REF" | grep -oE '[0-9]+' | head -1)
-            if [ -n "$PR_NUMBER" ]; then
-              RESOLVED_REF="refs/pull/${PR_NUMBER}/merge"
-              IS_DEPLOYABLE="false"
-              echo "检测到 merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
-            else
-              RESOLVED_REF="main"
-              echo "无法提取 PR 号，使用默认分支: main (原始 ref: $REF)"
-            fi
+          elif [[ "$REF" =~ ^([0-9]+)/merge ]] || [[ "$REF" == *"/merge"* ]]; then
+            echo "ERROR: deploy-dokilove is deploy-only and does not accept PR merge refs. Got ref: $REF" >&2
+            exit 1
           elif [[ "$REF" =~ ^(web-|worker-)?v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
             RESOLVED_REF="$REF"
             echo "检测到 tag: $REF，将执行部署"
           else
-            RESOLVED_REF="$REF"
-            IS_DEPLOYABLE="false"
-            echo "非生产部署 ref，不执行部署: $REF"
+            echo "ERROR: deploy-dokilove only accepts deployable refs (main or release tags). Got ref: $REF" >&2
+            exit 1
           fi
 
           echo "ref=$RESOLVED_REF" >> "$GITHUB_OUTPUT"
-          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "pr_number=" >> "$GITHUB_OUTPUT"
           echo "is_deployable=$IS_DEPLOYABLE" >> "$GITHUB_OUTPUT"
           echo "deploy_hk=$DEPLOY_HK" >> "$GITHUB_OUTPUT"
           echo "deploy_pve=$DEPLOY_PVE" >> "$GITHUB_OUTPUT"

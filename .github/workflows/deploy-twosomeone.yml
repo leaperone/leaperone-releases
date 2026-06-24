@@ -1,9 +1,6 @@
 name: Deploy 2SOMEone
 run-name: >-
-  Deploy 2SOMEone
-  ${{ github.event.client_payload.env || inputs.env || 'production' }}
-  ${{ github.event.client_payload.ref || inputs.ref || 'main' }}
-  [src=${{ github.event.client_payload.source_sha || github.sha }}]
+  🚀 Deploy 2SOMEone · ${{ github.event.client_payload.env || inputs.env || 'production' }} · ${{ github.event.client_payload.message || inputs.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || inputs.env || 'production' }}]
 
 on:
   repository_dispatch:
@@ -85,36 +82,9 @@ jobs:
             echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
             echo "使用 main 分支: $REF"
             IS_DEPLOYABLE=true
-          elif [[ "$REF" =~ ^([0-9]+)/merge ]]; then
-            PR_NUMBER="${BASH_REMATCH[1]}"
-            echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
-            echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
-            echo "is_deployable=false" >> $GITHUB_OUTPUT
-            echo "is_tag=false" >> $GITHUB_OUTPUT
-            echo "deploy_env=beta" >> $GITHUB_OUTPUT
-            echo "检测到 PR merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
-            DEPLOY_ENV=beta
-            IS_DEPLOYABLE=false
-          elif [[ "$REF" == *"/merge"* ]]; then
-            PR_NUMBER=$(echo "$REF" | grep -oE '[0-9]+' | head -1)
-            if [ -n "$PR_NUMBER" ]; then
-              echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
-              echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
-              echo "is_deployable=false" >> $GITHUB_OUTPUT
-              echo "is_tag=false" >> $GITHUB_OUTPUT
-              echo "deploy_env=beta" >> $GITHUB_OUTPUT
-              echo "检测到 merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
-              DEPLOY_ENV=beta
-              IS_DEPLOYABLE=false
-            else
-              echo "ref=main" >> $GITHUB_OUTPUT
-              echo "pr_number=" >> $GITHUB_OUTPUT
-              echo "is_deployable=true" >> $GITHUB_OUTPUT
-              echo "is_tag=false" >> $GITHUB_OUTPUT
-              echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
-              echo "无法提取 PR 号，使用默认分支: main (原始 ref: $REF)"
-              IS_DEPLOYABLE=true
-            fi
+          elif [[ "$REF" =~ ^([0-9]+)/merge ]] || [[ "$REF" == *"/merge"* ]]; then
+            echo "ERROR: deploy-twosomeone is deploy-only. PR merge refs are handled by verify-pr-twosomeone. Got ref: $REF" >&2
+            exit 1
           elif [[ "$REF" =~ ^(web-)?v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
             echo "ref=$REF" >> $GITHUB_OUTPUT
             echo "pr_number=" >> $GITHUB_OUTPUT
@@ -124,13 +94,8 @@ jobs:
             echo "检测到 tag: $REF，将执行部署"
             IS_DEPLOYABLE=true
           else
-            echo "ref=$REF" >> $GITHUB_OUTPUT
-            echo "pr_number=" >> $GITHUB_OUTPUT
-            echo "is_deployable=false" >> $GITHUB_OUTPUT
-            echo "is_tag=false" >> $GITHUB_OUTPUT
-            echo "deploy_env=$DEPLOY_ENV" >> $GITHUB_OUTPUT
-            echo "使用指定 ref: $REF"
-            IS_DEPLOYABLE=false
+            echo "ERROR: deploy-twosomeone only accepts deployable refs (main or web-v* tags). Got ref: $REF" >&2
+            exit 1
           fi
 
       - name: Detect web-v* tag pointing at source_sha
@@ -188,56 +153,18 @@ jobs:
               --json databaseId,status,displayTitle \
               | jq \
                 --arg src "[src=$SOURCE_SHA]" \
-                --arg tag " $POINTED_TAG " \
-                '[.[] | select(.databaseId != (env.SELF_RUN | tonumber)) | select(.displayTitle | contains($src)) | select(.displayTitle | contains($tag))]')
+                --arg env_token "[env=production]" \
+                '[.[] | select(.databaseId != (env.SELF_RUN | tonumber)) | select(.displayTitle | contains($src)) | select(.displayTitle | contains($env_token))]')
             total=$(echo "$matching" | jq 'length')
             active=$(echo "$matching" | jq '[.[] | select(.status != "completed")] | length')
             if [ "$total" -gt 0 ]; then ever_seen=true; fi
             if [ "$ever_seen" = true ] && [ "$active" = "0" ]; then
-              echo "Tag run finished; proceeding."; exit 0
+              echo "Production run for $POINTED_TAG finished; proceeding."; exit 0
             fi
             echo "matching_total=$total active=$active ever_seen=$ever_seen; waiting..."
             sleep 30
           done
           echo "::warning::Timed out after 60min waiting for tag $POINTED_TAG; proceeding."
-
-  verify-pr:
-    needs: prepare
-    if: needs.prepare.outputs.is_deployable != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          token: ${{ secrets.ACCESS_TOKEN }}
-          repository: leaperone/2SOMEone
-          ref: ${{ needs.prepare.outputs.ref }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build (non-deployable verification)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: apps/web/docker/Dockerfile
-          target: final
-          push: false
-          load: false
-          tags: 2someren:web-pr-verify
-          cache-from: type=gha,scope=web-twosomeone-pr
-          cache-to: type=gha,scope=web-twosomeone-pr,mode=max
-          build-args: |
-            POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
-            NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
-            NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
-            NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
-            SENTRY_URL=https://sentry.leaper.one
-            SENTRY_ORG=leaperone
-            SENTRY_PROJECT=2someone-web
-            SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}
-          secrets: |
-            next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
 
   build-and-push:
     needs: prepare
