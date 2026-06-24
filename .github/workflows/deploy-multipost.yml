@@ -1,4 +1,6 @@
 name: Deploy MultiPost
+run-name: >-
+  🚀 Deploy MultiPost · ${{ github.event.client_payload.env || inputs.env || 'production' }} · ${{ github.event.client_payload.message || inputs.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || inputs.env || 'production' }}]
 
 on:
   repository_dispatch:
@@ -27,7 +29,6 @@ jobs:
           BUILD_TARGETS="${{ github.event.client_payload.build_targets }}"
 
           DEPLOY_ENV="production"
-          PR_NUMBER=""
           IS_DEPLOYABLE="true"
 
           if [ -z "$TARGETS" ]; then
@@ -67,13 +68,13 @@ jobs:
           fi
 
           if [ "$ENV_INPUT" != "" ] && [ "$ENV_INPUT" != "$DEPLOY_ENV" ]; then
-            IS_DEPLOYABLE="false"
-            echo "Unsupported deploy env: $ENV_INPUT"
+            echo "ERROR: deploy-multipost only supports env=production, got: $ENV_INPUT" >&2
+            exit 1
           fi
 
           if [ "$DEPLOY_HK" = "false" ] && [ "$DEPLOY_PVE" = "false" ]; then
-            IS_DEPLOYABLE="false"
-            echo "No valid deploy targets resolved from: $TARGETS"
+            echo "ERROR: no valid deploy targets resolved from: $TARGETS" >&2
+            exit 1
           fi
 
           if [ -z "$REF" ]; then
@@ -82,32 +83,19 @@ jobs:
           elif [[ "$REF" == "main" ]] || [[ "$REF" == "refs/heads/main" ]]; then
             RESOLVED_REF="$REF"
             echo "使用 main 分支: $REF"
-          elif [[ "$REF" =~ ^([0-9]+)/merge ]]; then
-            PR_NUMBER="${BASH_REMATCH[1]}"
-            RESOLVED_REF="refs/pull/${PR_NUMBER}/merge"
-            IS_DEPLOYABLE="false"
-            echo "检测到 PR merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
-          elif [[ "$REF" == *"/merge"* ]]; then
-            PR_NUMBER=$(printf '%s' "$REF" | grep -oE '[0-9]+' | head -1)
-            if [ -n "$PR_NUMBER" ]; then
-              RESOLVED_REF="refs/pull/${PR_NUMBER}/merge"
-              IS_DEPLOYABLE="false"
-              echo "检测到 merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
-            else
-              RESOLVED_REF="main"
-              echo "无法提取 PR 号，使用默认分支: main (原始 ref: $REF)"
-            fi
+          elif [[ "$REF" =~ ^([0-9]+)/merge ]] || [[ "$REF" == *"/merge"* ]]; then
+            echo "ERROR: deploy-multipost is deploy-only. PR merge refs are handled by verify-pr-multipost. Got ref: $REF" >&2
+            exit 1
           elif [[ "$REF" =~ ^(web-|worker-)?v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
             RESOLVED_REF="$REF"
             echo "检测到 tag: $REF，将执行部署"
           else
-            RESOLVED_REF="$REF"
-            IS_DEPLOYABLE="false"
-            echo "非生产部署 ref，不执行部署: $REF"
+            echo "ERROR: deploy-multipost only accepts deployable refs (main or release tags). Got ref: $REF" >&2
+            exit 1
           fi
 
           echo "ref=$RESOLVED_REF" >> "$GITHUB_OUTPUT"
-          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "pr_number=" >> "$GITHUB_OUTPUT"
           echo "is_deployable=$IS_DEPLOYABLE" >> "$GITHUB_OUTPUT"
           echo "deploy_env=$DEPLOY_ENV" >> "$GITHUB_OUTPUT"
           echo "deploy_hk=$DEPLOY_HK" >> "$GITHUB_OUTPUT"
@@ -115,68 +103,6 @@ jobs:
           echo "build_web=$BUILD_WEB" >> "$GITHUB_OUTPUT"
           echo "build_backend=$BUILD_BACKEND" >> "$GITHUB_OUTPUT"
           echo "build_video_stt=$BUILD_VIDEO_STT" >> "$GITHUB_OUTPUT"
-
-  verify-pr:
-    needs: resolve-context
-    if: needs.resolve-context.outputs.is_deployable != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.ACCESS_TOKEN }}
-          repository: leaperone/MultiPost
-          ref: ${{ needs.resolve-context.outputs.ref }}
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'pnpm'
-
-      - name: Setup Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.8.2
-
-      - name: Setup Atlas
-        run: |
-          curl -fsSL https://release.ariga.io/atlas/atlas-community-linux-amd64-v1.2.2 -o /tmp/atlas
-          printf '%s  %s\n' 'a38e34e886cd0b9d2d625fe0046fed107785b1562bd2d07dbd96fadfc57dec62' /tmp/atlas | sha256sum -c -
-          chmod +x /tmp/atlas
-          sudo mv /tmp/atlas /usr/local/bin/atlas
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Generate route tree
-        run: pnpm --filter multipost-web generate-routes
-
-      - name: Typecheck
-        run: pnpm --filter multipost-web exec tsc --noEmit
-
-      - name: Lint
-        run: pnpm lint
-
-      - name: Build Atlas source
-        run: pnpm db:build:source
-
-      - name: Atlas migrate lint
-        run: atlas migrate lint --env local --config file://db/atlas/atlas.hcl --latest=1
-
-      - name: Atlas no-DML lint
-        run: pnpm db:lint:no-dml
-
-      - name: Backend Deno check
-        working-directory: apps/backend
-        run: deno check main.ts
-
-      - name: Video STT Deno check
-        working-directory: apps/video-stt-worker
-        run: deno check src/main.ts
 
   build-and-push:
     needs: resolve-context

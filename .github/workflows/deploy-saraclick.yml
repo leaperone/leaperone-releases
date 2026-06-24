@@ -1,4 +1,6 @@
 name: Deploy SaraClick
+run-name: >-
+  🚀 Deploy SaraClick · ${{ github.event.client_payload.env || inputs.env || 'production' }} · ${{ github.event.client_payload.message || inputs.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || inputs.env || 'production' }}]
 
 on:
   repository_dispatch:
@@ -26,27 +28,9 @@ jobs:
             echo "pr_number=" >> $GITHUB_OUTPUT
             echo "is_deployable=true" >> $GITHUB_OUTPUT
             echo "使用 main 分支: $REF"
-          elif [[ "$REF" =~ ^([0-9]+)/merge ]]; then
-            # 提取 PR 号，使用 PR 的 merge ref
-            PR_NUMBER="${BASH_REMATCH[1]}"
-            echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
-            echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
-            echo "is_deployable=false" >> $GITHUB_OUTPUT
-            echo "检测到 PR merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
-          elif [[ "$REF" == *"/merge"* ]]; then
-            # 其他 merge 格式，尝试提取 PR 号
-            PR_NUMBER=$(echo "$REF" | grep -oE '[0-9]+' | head -1)
-            if [ -n "$PR_NUMBER" ]; then
-              echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
-              echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
-              echo "is_deployable=false" >> $GITHUB_OUTPUT
-              echo "检测到 merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
-            else
-              echo "ref=main" >> $GITHUB_OUTPUT
-              echo "pr_number=" >> $GITHUB_OUTPUT
-              echo "is_deployable=true" >> $GITHUB_OUTPUT
-              echo "无法提取 PR 号，使用默认分支: main (原始 ref: $REF)"
-            fi
+          elif [[ "$REF" =~ ^([0-9]+)/merge ]] || [[ "$REF" == *"/merge"* ]]; then
+            echo "ERROR: deploy-saraclick is deploy-only and does not accept PR merge refs. Got ref: $REF" >&2
+            exit 1
           elif [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
             # Tag 格式，标记为需要部署
             echo "ref=$REF" >> $GITHUB_OUTPUT
@@ -54,10 +38,8 @@ jobs:
             echo "is_deployable=true" >> $GITHUB_OUTPUT
             echo "检测到 tag: $REF，将执行部署"
           else
-            echo "ref=$REF" >> $GITHUB_OUTPUT
-            echo "pr_number=" >> $GITHUB_OUTPUT
-            echo "is_deployable=false" >> $GITHUB_OUTPUT
-            echo "使用指定 ref: $REF"
+            echo "ERROR: deploy-saraclick only accepts deployable refs (main or release tags). Got ref: $REF" >&2
+            exit 1
           fi
 
       - name: Checkout code
