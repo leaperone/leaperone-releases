@@ -1,9 +1,19 @@
-name: twosomeone-${DEPLOY_ENV:-production}
+# twosomeone web — 蓝绿版（仅 PVE LXC 200 / production 经 deploy-pve.yml 使用）。
+#
+# 相对 legacy 的改动（为支持两色并存做的最小改动）：
+#  1. 去掉写死的 container_name —— 改用 compose project name 区分两色（COLOR=blue/green）。
+#  2. WEB_PORT 两色不同：blue=3000（沿用现状），green=3010。
+#  3. 不放 compose healthcheck —— /api/health 会真打外部（含付费）API，不宜 30s 高频；
+#     就绪判定交给 deploy-bluegreen.sh 的一次性 curl -f 探测，崩溃恢复交给 restart: unless-stopped。
+#
+# 部署由 /opt/apps/bin/deploy.sh 探测到同目录可执行的 deploy-bluegreen.sh 后委派执行：
+#   COLOR=<color> WEB_PORT=<port> docker compose -p twosomeone-<color> up -d --pull always
+# IMAGE_TAG 仍来自 .env（现网 = web-main-latest）。
+name: twosomeone-${COLOR:-blue}
 
 services:
   web:
     image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/2someren:${IMAGE_TAG:-web-main-latest}
-    container_name: twosomeone-web-${DEPLOY_ENV:-production}
     ports:
       - "${WEB_PORT:-3000}:3000"
     env_file:
