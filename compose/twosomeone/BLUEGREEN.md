@@ -10,7 +10,8 @@ deploy-pve.yml scp `compose/twosomeone/*` 到 `/opt/apps/twosomeone/production/`
   （`twosomeone-blue` / `twosomeone-green`），端口 blue=3000 / green=3010。
 - `deploy-bluegreen.sh`：随 compose 一起 scp 到 production 目录。通用 `deploy.sh` 探测到它可执行就
   `exec` 委派（其它项目无此文件 → 保持 legacy 停机式 `down`→`up`，行为不变）。
-- 切流：起空闲色 → `/api/health` 探测（curl -f：503 失败 / 207·200 通过）→ 备份并 sed 改写
+- 切流：起空闲色 → `/api/healthz` 探测（轻量 liveness，与 web 镜像 docker HEALTHCHECK 同端点，~4ms 返回 200；
+  **不用** `/api/health` 聚合 readiness，后者串海外依赖会 5s+/207 卡爆探测窗口）→ 备份并 sed 改写
   nginx upstream 端口 → `nginx -t` → `nginx -s reload`（任一步失败回滚 conf 并 reload、down 掉空闲色）
   → 观察 10s → 按端口停旧色 → prune。
 - nginx 侧只有 `00-twosomeone-upstream.conf` 一个文件被切换；`2some.ren` 与 `api.2some.ren` 两个 vhost
@@ -43,7 +44,7 @@ deploy-pve.yml scp `compose/twosomeone/*` 到 `/opt/apps/twosomeone/production/`
 **顺序很重要**（先把旧后端拉起来再把流量切回去，否则会短暂指向已停后端）：
 
 1. 启动旧色容器：`docker compose -p twosomeone-<旧色> start`（首迁回滚 legacy：`docker start twosomeone-web-production`）。
-2. 探旧色健康：`curl -fsS http://127.0.0.1:<旧端口>/api/health`。
+2. 探旧色健康：`curl -fsS http://127.0.0.1:<旧端口>/api/healthz`。
 3. 把 `00-twosomeone-upstream.conf` 端口 sed 回旧端口 → `nginx -t && nginx -s reload`。
 
 （旧色停止后保留未删，正是为此。脚本在切流后复验失败时会自动回滚，无需人工介入；上述为人工兜底。）

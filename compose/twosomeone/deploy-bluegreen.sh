@@ -32,7 +32,10 @@ ACTIVE_CONF=/etc/nginx/sites-enabled/00-twosomeone-upstream.conf
 LEGACY_NAME=twosomeone-web-production
 BLUE_PORT=3000
 GREEN_PORT=3010
-HEALTH_PATH=/api/health    # curl -f：down(503) 判失败，degraded(207)/ok(200) 判通过。
+# 探 /api/healthz（轻量 liveness，与 web 镜像 docker HEALTHCHECK 同端点，~4ms 返回 200）。
+# 切忌用 /api/health：那是聚合 readiness，串 stripe/openai/posthog/resend 等海外依赖，
+# 国内稳定 timeout 5s+ 返回 207，必然超过下面的探测窗口，导致 idle 色健康检查假性失败、部署 abort。
+HEALTH_PATH=/api/healthz
 HEALTH_RETRIES=30
 HEALTH_INTERVAL=2
 OBSERVE_SECONDS=10
@@ -52,9 +55,9 @@ fi
 probe() {
   local url="$1"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsS --max-time 4 "$url" >/dev/null 2>&1
+    curl -fsS --max-time 8 "$url" >/dev/null 2>&1
   elif command -v wget >/dev/null 2>&1; then
-    wget -q -T 4 -O /dev/null "$url" 2>/dev/null
+    wget -q -T 8 -O /dev/null "$url" 2>/dev/null
   else
     echo "ERROR: neither curl nor wget on host for health probe" >&2
     return 2
@@ -64,7 +67,7 @@ probe() {
 # 经 nginx 端到端探（带 SNI/Host，校验 TLS + 路由 + 后端）。
 probe_via_nginx() {
   local host="$1"
-  curl -fsS --max-time 5 --resolve "${host}:443:127.0.0.1" "https://${host}${HEALTH_PATH}" >/dev/null 2>&1
+  curl -fsS --max-time 8 --resolve "${host}:443:127.0.0.1" "https://${host}${HEALTH_PATH}" >/dev/null 2>&1
 }
 
 cd "$PROJECT_DIR"
