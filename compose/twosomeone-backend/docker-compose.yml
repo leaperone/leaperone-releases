@@ -1,19 +1,30 @@
-name: twosomeone-backend-${DEPLOY_ENV:-production}
+# twosomeone backend — 蓝绿版（仅 PVE LXC 200 / production 经 deploy-pve.yml 使用）。
+#
+# 相对 legacy 的改动（为支持两色并存做的最小改动）：
+#  1. 去掉写死的 container_name —— 改用 compose project name 区分两色（COLOR=blue/green）。
+#  2. BACKEND_PORT 两色不同：blue=3003（沿用现状），green=3013。host 端口 → 容器 3001。
+#
+# 部署由 /opt/apps/bin/deploy.sh 探测到同目录可执行的 deploy-bluegreen.sh 后委派执行：
+#   COLOR=<color> BACKEND_PORT=<port> docker compose -p twosomeone-backend-<color> up -d --pull always
+# IMAGE_TAG 仍来自 .env（现网 = backend-main-latest）。env(含 WEB_BASE_URL) 由 host .env 提供。
+name: twosomeone-backend-${COLOR:-blue}
 
 services:
   backend:
     image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/2someren:${IMAGE_TAG:-backend-main-latest}
-    container_name: twosomeone-backend-${DEPLOY_ENV:-production}
     ports:
-      # Host 3003 → container 3001 (host 3001 already occupied by web-beta).
+      # Host 3003/3013 → container 3001 (host 3001 已被 web-beta 占用)。
       - "${BACKEND_PORT:-3003}:3001"
     env_file:
       - .env
-    # Backend calls web via WEB_BASE_URL — use host-gateway so it reaches
-    # the web container's host-published port (LXC 200 host :3000).
+    # Backend → web reverse calls via WEB_BASE_URL=http://host.docker.internal:3031
+    # (host nginx 内部监听 → twosomeone_web_active,跟随 web 活动色)。
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    # backend 优雅停机最长 ~100s(worker 抽干 + 收尾,见 src/index.ts SHUTDOWN_HARD_TIMEOUT_MS)。
+    # 给足停机宽限,避免蓝绿停旧色时 Docker 默认 ~10s SIGKILL 打断在途 worker。
+    stop_grace_period: 110s
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3001/health"]
       interval: 30s
