@@ -1,17 +1,13 @@
+# multipost 常驻服务（PVE LXC 200 / production）。
+#
+# web 已迁出到 docker-compose.web.yml 走蓝绿（见 BLUEGREEN.md）；本文件只管：
+#  - video-stt-worker：无端口、单例后台 worker，每次部署 recreate（瞬断可接受）。
+#  - backend：profile 默认禁用占位 —— 不参与本机蓝绿。启用前须确认全局只有一个实例轮询 multipost_db 的 cron 队列。
+#
+# deploy.sh 仍以本文件做存在性检查后委派 deploy-bluegreen.sh；后者会 `up -d` 本文件保证 worker 常驻。
 name: multipost-${DEPLOY_ENV:-production}
 
 services:
-  web:
-    image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/multipost:${IMAGE_TAG:-latest}
-    container_name: multipost-web-${DEPLOY_ENV:-production}
-    ports:
-      - "${WEB_PORT:-9900}:3000"
-    env_file:
-      - .env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    restart: unless-stopped
-
   backend:
     image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/multipost:${BACKEND_IMAGE_TAG:-backend-latest}
     container_name: multipost-backend-${DEPLOY_ENV:-production}
