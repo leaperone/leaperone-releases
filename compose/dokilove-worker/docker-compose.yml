@@ -10,6 +10,9 @@ services:
       # MissAV is behind Cloudflare; route fetches through FlareSolverr (real Chrome).
       CRAWL_FETCH_MODE: flaresolverr
       FLARESOLVERR_URL: http://flaresolverr:8191
+      # Solving the CF challenge over the host tunnel takes ~60-90s; default 60s
+      # times out, so allow more headroom.
+      FLARESOLVERR_MAX_TIMEOUT_MS: "120000"
     ports:
       - '127.0.0.1:${WORKER_PORT:-3100}:3100'
     restart: unless-stopped
