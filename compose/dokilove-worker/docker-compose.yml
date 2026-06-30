@@ -6,6 +6,30 @@ services:
     container_name: dokilove-worker-${DEPLOY_ENV:-production}
     env_file:
       - .env
+    environment:
+      # MissAV is behind Cloudflare; route fetches through FlareSolverr (real Chrome).
+      CRAWL_FETCH_MODE: flaresolverr
+      FLARESOLVERR_URL: http://flaresolverr:8191
     ports:
       - '127.0.0.1:${WORKER_PORT:-3100}:3100'
     restart: unless-stopped
+    depends_on:
+      - flaresolverr
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: dokilove-flaresolverr-${DEPLOY_ENV:-production}
+    environment:
+      LOG_LEVEL: info
+      TZ: Asia/Shanghai
+    restart: unless-stopped
+    # No published ports: only the worker reaches it via the internal compose
+    # network (service name `flaresolverr`), so container-to-container traffic
+    # never goes through the host.
+    #
+    # SECURITY / EGRESS: FlareSolverr runs a real Chrome that can issue arbitrary
+    # sub-requests the app cannot block. It relies on the PVE host's outbound
+    # tunnel to reach missav. If it cannot pass GFW/CF, set PROXY_POOL in this
+    # project's .env — the worker forwards that proxy to FlareSolverr per request.
+    # For hardening, restrict this service's egress at the host firewall to the
+    # outbound proxy + missav hosts only.
