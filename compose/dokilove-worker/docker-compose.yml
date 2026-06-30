@@ -17,7 +17,9 @@ services:
       - flaresolverr
 
   flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:latest
+    # ghcr.io is unreachably slow from the PVE host (docker daemon has no tunnel),
+    # so pull via the NJU ghcr mirror; image content is identical.
+    image: ghcr.nju.edu.cn/flaresolverr/flaresolverr:latest
     container_name: dokilove-flaresolverr-${DEPLOY_ENV:-production}
     environment:
       LOG_LEVEL: info
