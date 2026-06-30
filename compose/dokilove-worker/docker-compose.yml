@@ -13,6 +13,9 @@ services:
       # Solving the CF challenge over the host tunnel takes ~60-90s; default 60s
       # times out, so allow more headroom.
       FLARESOLVERR_MAX_TIMEOUT_MS: "120000"
+      # MissAV runs on its own hourly cron (MISSAV_CRON, default "0 * * * *");
+      # cap each run to 30 videos so an hour's worth fits the slow CF solving.
+      VIDEO_CRAWL_LIMIT: "30"
     ports:
       - '127.0.0.1:${WORKER_PORT:-3100}:3100'
     restart: unless-stopped
