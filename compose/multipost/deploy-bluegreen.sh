@@ -7,29 +7,34 @@
 # 端口: blue=9900  green=9910
 # 镜像: 沿用 .env 的 IMAGE_TAG（现网 = latest）；`up --pull always` 拉最新构建。
 #
-# 范围: 只对 web 做蓝绿（零停机）。video-stt-worker 是无端口单例 worker，由主
-#       docker-compose.yml 常驻、每次 recreate（瞬断可接受）。backend 不在本机蓝绿
-#       范围内（PVE profile 默认禁用）。
+# 范围: 只对 web 做蓝绿（零停机）。video-stt-worker 是无端口单例 worker，backend 是 PVE 唯一
+#       的 cron 单例 —— 两者由主 docker-compose.yml 常驻、每次部署 recreate（瞬断可接受）。
+#
+# 流量架构（multipost 不经本机 nginx 的 server_name，而是经 frp + 源站 TLS 终止）：
+#   multipost.app → HK:443 stream(ssl_preread,不解密) → frps:19900 → 隧道 → 本机 frpc
+#     → 127.0.0.1:9443（本机 nginx multipost-local.conf，终止 TLS）→ upstream multipost_web_active
+#     → web 容器(blue:9900 / green:9910)。蓝绿只切 multipost_web_active 的端口。
 #
 # ── 设计要点（移植自 twosomeone deploy-bluegreen.sh，已在生产验证）──────────────
 #  - flock 串行化：同一时刻只允许一个部署，消除 upstream 解析→改写的 TOCTOU。
-#  - preflight：起 idle 前强制校验 vhost 已指 multipost_web_active 且无残留 9900/9910。
-#  - fail-closed 解析 active 端口：upstream 必须恰好一行 server 127.0.0.1:<port> 且 ∈ {9900,9910}。
-#  - 切流原子化：备份 upstream → sed 改端口 → nginx -t → reload；任一步失败回滚 conf 并 reload、down idle。
-#  - 切完经 nginx 端到端复验（multipost.app 的 /api/health）再停旧；复验失败自动回滚，旧色零中断。
+#  - preflight：起 idle 前强制校验 multipost-local.conf 存在且 proxy_pass multipost_web_active。
+#  - fail-closed 解析 active 端口：upstream 块必须恰好一行 server 127.0.0.1:<port> 且 ∈ {9900,9910}。
+#  - 切流原子化：备份 conf → sed 改 upstream 端口 → nginx -t → reload；任一步失败回滚并 reload、down idle。
+#  - 切完经源站 9443(proxy_protocol+TLS) 端到端复验 /api/health 再停旧；复验失败自动回滚，旧色零中断。
 #  - 停旧色按 compose project / legacy 容器名，不靠 `docker ps --filter publish`。
 #
 # ── 首次 BOOTSTRAP（人工一次性；详见 BLUEGREEN.md）──────────────────────────────
-#  1) 装 00-multipost-upstream.conf，内容 `server 127.0.0.1:9900;`。
-#  2) 把 multipost.app vhost 的 proxy_pass 改成 http://multipost_web_active。
-#  3) nginx -t && nginx -s reload。此刻 active=9900=legacy，对外无变化。
-#  4) 首次跑本脚本：9900 → green:9910 → 切 upstream → 停 legacy 容器。此后 blue↔green 交替。
+#  1) acme 签 *.multipost.app 证书到 /etc/nginx/ssl/multipost.app/（同 2some.ren）。
+#  2) 装 multipost-local.conf 到 sites-enabled（listen 9443 ssl proxy_protocol + upstream 9900）。
+#  3) HK: stream map 把 multipost.app/api.multipost.app 指向直透源站的 upstream；停 7443 的 L7 vhost。
+#  4) frpc multipost.toml localPort 9900→9443，docker restart frpc。
+#  5) 首次跑本脚本：9900 → green:9910 → 切 upstream → 停 legacy 容器。此后 blue↔green 交替。
 set -euo pipefail
 
 PROJECT_DIR=/opt/apps/multipost/production
 WEB_COMPOSE="$PROJECT_DIR/docker-compose.web.yml"
 WORKER_COMPOSE="$PROJECT_DIR/docker-compose.yml"
-ACTIVE_CONF=/etc/nginx/sites-enabled/00-multipost-upstream.conf
+ACTIVE_CONF=/etc/nginx/sites-enabled/multipost-local.conf
 LEGACY_NAME=multipost-web-production
 BLUE_PORT=9900
 GREEN_PORT=9910
@@ -38,8 +43,8 @@ HEALTH_PATH=/api/health
 HEALTH_RETRIES=30
 HEALTH_INTERVAL=2
 OBSERVE_SECONDS=10
-# ⚠ 落地前在 PVE 核实 vhost 文件名 + 是否有其它子域也反代到 web（见 BLUEGREEN.md 待确认项 #2）。
-VHOSTS=(/etc/nginx/sites-enabled/multipost.app.conf)
+# 源站 TLS 终止 server（multipost-local.conf 内）的本机端口；端到端复验经此口（proxy_protocol）。
+ORIGIN_PORT=9443
 PUBLIC_HOSTS=(multipost.app)
 
 # ── 部署锁（flock）：非阻塞，拿不到锁说明已有部署在跑，直接退出 ──────────────────
@@ -63,28 +68,26 @@ probe() {
   fi
 }
 
-# 经 nginx 端到端探（带 SNI/Host，校验 TLS + 路由 + 后端）。
-# ⚠ 假设 PVE 本机 nginx 在 :443 终止 multipost.app 的 TLS。若 TLS 实际在 HK 终止、
-#   PVE 这侧只是 frp→http 后端，请改成探 PVE 本地 vhost 的实际 listen 端口（带 Host 头）。
-probe_via_nginx() {
+# 经源站 9443 端到端探（proxy_protocol + TLS + SNI + 路由 + 后端）。源站 listen 带 proxy_protocol，
+# 故必须用 curl --haproxy-protocol 先发 PROXY 头；-k 因我们连 127.0.0.1 而证书 CN 是 multipost.app。
+probe_via_origin() {
   local host="$1"
-  curl -fsS --max-time 8 --resolve "${host}:443:127.0.0.1" "https://${host}${HEALTH_PATH}" >/dev/null 2>&1
+  curl -fsS -k --haproxy-protocol --max-time 8 --resolve "${host}:${ORIGIN_PORT}:127.0.0.1" \
+    "https://${host}:${ORIGIN_PORT}${HEALTH_PATH}" >/dev/null 2>&1
 }
 
 cd "$PROJECT_DIR"
 
-# ── PREFLIGHT：vhost 必须已 bootstrap 到 upstream，且无残留直连旧端口 ───────────────
-for vh in "${VHOSTS[@]}"; do
-  if [ ! -f "$vh" ]; then
-    echo "ERROR: vhost $vh missing; bootstrap nginx first (see BLUEGREEN.md)." >&2; exit 1
-  fi
-  if ! grep -qE 'proxy_pass[[:space:]]+http://multipost_web_active' "$vh"; then
-    echo "ERROR: $vh does not reference multipost_web_active; bootstrap incomplete." >&2; exit 1
-  fi
-  if grep -qE 'proxy_pass[[:space:]]+http://127\.0\.0\.1:(9900|9910)' "$vh"; then
-    echo "ERROR: $vh still has a direct 127.0.0.1:9900/9910 proxy_pass; bootstrap incomplete." >&2; exit 1
-  fi
-done
+# ── PREFLIGHT：源站 conf 必须已 bootstrap（含 upstream + proxy_pass multipost_web_active）─────
+if [ ! -f "$ACTIVE_CONF" ]; then
+  echo "ERROR: $ACTIVE_CONF missing; bootstrap nginx first (see BLUEGREEN.md)." >&2; exit 1
+fi
+if ! grep -qE 'upstream[[:space:]]+multipost_web_active' "$ACTIVE_CONF"; then
+  echo "ERROR: $ACTIVE_CONF has no 'upstream multipost_web_active' block; bootstrap incomplete." >&2; exit 1
+fi
+if ! grep -qE 'proxy_pass[[:space:]]+http://multipost_web_active' "$ACTIVE_CONF"; then
+  echo "ERROR: $ACTIVE_CONF does not proxy_pass to multipost_web_active; bootstrap incomplete." >&2; exit 1
+fi
 
 # 1. fail-closed 解析 active 端口（^server 开头的正则本就排除注释行）
 mapfile -t server_ports < <(grep -oE '^[[:space:]]*server[[:space:]]+127\.0\.0\.1:[0-9]+' "$ACTIVE_CONF" \
@@ -142,8 +145,8 @@ if ! probe "http://127.0.0.1:${idle_port}${HEALTH_PATH}"; then
   echo "ERROR: idle backend ${idle_port} unhealthy after switch." >&2; verify_ok=0
 fi
 for host in "${PUBLIC_HOSTS[@]}"; do
-  if ! probe_via_nginx "$host"; then
-    echo "ERROR: post-switch probe via nginx failed for ${host}." >&2; verify_ok=0
+  if ! probe_via_origin "$host"; then
+    echo "ERROR: post-switch probe via origin :${ORIGIN_PORT} failed for ${host}." >&2; verify_ok=0
   fi
 done
 if [ "$verify_ok" != 1 ]; then
@@ -167,10 +170,10 @@ if [ "$(docker inspect -f '{{.State.Running}}' "$LEGACY_NAME" 2>/dev/null || ech
   docker stop "$LEGACY_NAME" >/dev/null 2>&1 || true
 fi
 
-# 7. 常驻 worker：拉新镜像并保证 video-stt-worker 在跑（backend profile 默认不激活）。
+# 7. 常驻 worker + backend(PVE 单例)：拉新镜像并保证在跑。--profile backend 启用 backend。
 #    不加 --remove-orphans：避免误删尚保留作回滚的 legacy web 容器（multipost-web-production）。
-echo "==> ensuring resident workers are up to date"
-docker compose -f "$WORKER_COMPOSE" up -d --pull always
+echo "==> ensuring resident workers + backend are up to date"
+docker compose -f "$WORKER_COMPOSE" --profile backend up -d --pull always
 
 # 8. 跑可执行的 post-deploy scripts/*（如带宽限制脚本）。
 if [ -d "$PROJECT_DIR/scripts" ]; then
