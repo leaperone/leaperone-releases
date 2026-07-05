@@ -134,7 +134,7 @@ jobs:
         if: needs.resolve-context.outputs.build_web == 'true'
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          NEXT_PUBLIC_SENTRY_DSN: https://ad95f8e28d800b13f55fa2e67e302cb9@sentry.leaper.one/7
+          NEXT_PUBLIC_SENTRY_DSN: https://ad95f8e28d800b13f55fa2e67e302cb9@sentry.leaperone.cn/7
         run: |
           test -n "$SENTRY_AUTH_TOKEN" || { echo "SENTRY_AUTH_TOKEN required"; exit 1; }
           if [[ "$NEXT_PUBLIC_SENTRY_DSN" == *"__DSN_PLACEHOLDER__"* ]]; then
@@ -144,9 +144,9 @@ jobs:
 
       - name: Build Docker images
         env:
-          NEXT_PUBLIC_SENTRY_DSN: https://ad95f8e28d800b13f55fa2e67e302cb9@sentry.leaper.one/7
+          NEXT_PUBLIC_SENTRY_DSN: https://ad95f8e28d800b13f55fa2e67e302cb9@sentry.leaperone.cn/7
           NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
-          SENTRY_URL: https://sentry.leaper.one
+          SENTRY_URL: https://sentry.leaperone.cn
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: dokilove-web
           SENTRY_RELEASE: dokilove-web@${{ steps.sentry.outputs.release }}
@@ -172,7 +172,7 @@ jobs:
       - name: Extract sourcemaps from builder
         if: needs.resolve-context.outputs.build_web == 'true'
         env:
-          NEXT_PUBLIC_SENTRY_DSN: https://ad95f8e28d800b13f55fa2e67e302cb9@sentry.leaper.one/7
+          NEXT_PUBLIC_SENTRY_DSN: https://ad95f8e28d800b13f55fa2e67e302cb9@sentry.leaperone.cn/7
           NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
           SENTRY_RELEASE: dokilove-web@${{ steps.sentry.outputs.release }}
         run: |
@@ -262,7 +262,7 @@ jobs:
       - name: Upload to Sentry
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_URL: https://sentry.leaper.one
+          SENTRY_URL: https://sentry.leaperone.cn
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: dokilove-web
           SENTRY_RELEASE: dokilove-web@${{ needs.build-and-push.outputs.sentry_release }}

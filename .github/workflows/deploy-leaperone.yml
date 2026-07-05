@@ -80,10 +80,10 @@ jobs:
         env:
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.LEAPERONE_POSTHOG_KEY }}
           NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.LEAPERONE_POSTHOG_HOST }}
-          NEXT_PUBLIC_SENTRY_DSN: https://83a80750104b2b1be836f4eceac80d02@sentry.leaper.one/4
+          NEXT_PUBLIC_SENTRY_DSN: https://83a80750104b2b1be836f4eceac80d02@sentry.leaperone.cn/4
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: leaperone-web
-          SENTRY_URL: https://sentry.leaper.one
+          SENTRY_URL: https://sentry.leaperone.cn
           SENTRY_RELEASE: ${{ steps.sentry.outputs.release }}
           SENTRY_AUTH_TOKEN: ${{ steps.set-ref.outputs.is_deployable == 'true' && secrets.SENTRY_AUTH_TOKEN || '' }}
 
