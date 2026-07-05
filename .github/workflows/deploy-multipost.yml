@@ -152,9 +152,9 @@ jobs:
           POSTHOG_MULTIPOST_ENV_ID: ${{ secrets.POSTHOG_MULTIPOST_ENV_ID }}
           NEXT_PUBLIC_POSTHOG_KEY: phc_szGHmzMPL2vkmxOkrB120T4pSqq5WJWZdALmf1KCzdi
           NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.one
-          NEXT_PUBLIC_SENTRY_DSN: https://422fa55253c74dc835e207a204dc2d16@sentry.leaper.one/6
+          NEXT_PUBLIC_SENTRY_DSN: https://422fa55253c74dc835e207a204dc2d16@sentry.leaperone.cn/6
           NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${{ needs.resolve-context.outputs.deploy_env }}
-          SENTRY_URL: https://sentry.leaper.one
+          SENTRY_URL: https://sentry.leaperone.cn
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: multipost-web
           SENTRY_RELEASE: multipost-web@${{ steps.sentry.outputs.release }}
@@ -176,9 +176,9 @@ jobs:
       - name: Extract sourcemaps from builder
         if: needs.resolve-context.outputs.build_web == 'true'
         env:
-          NEXT_PUBLIC_SENTRY_DSN: https://422fa55253c74dc835e207a204dc2d16@sentry.leaper.one/6
+          NEXT_PUBLIC_SENTRY_DSN: https://422fa55253c74dc835e207a204dc2d16@sentry.leaperone.cn/6
           NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${{ needs.resolve-context.outputs.deploy_env }}
-          SENTRY_URL: https://sentry.leaper.one
+          SENTRY_URL: https://sentry.leaperone.cn
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: multipost-web
           SENTRY_RELEASE: multipost-web@${{ steps.sentry.outputs.release }}
@@ -287,7 +287,7 @@ jobs:
       - name: Upload to Sentry
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_URL: https://sentry.leaper.one
+          SENTRY_URL: https://sentry.leaperone.cn
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: multipost-web
           SENTRY_RELEASE: multipost-web@${{ needs.build-and-push.outputs.sentry_release }}
