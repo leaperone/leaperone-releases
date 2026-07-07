@@ -31,13 +31,40 @@ jobs:
       is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
       is_tag: ${{ steps.set-ref.outputs.is_tag }}
       deploy_env: ${{ steps.set-ref.outputs.deploy_env }}
+      components: ${{ steps.set-ref.outputs.components }}
     steps:
       - name: Validate and set ref
         id: set-ref
         run: |
           REF="${{ github.event.inputs.ref || github.event.client_payload.ref }}"
           ENV_INPUT="${{ github.event.inputs.env || github.event.client_payload.env }}"
+          COMPONENTS="${{ github.event.client_payload.components || github.event.client_payload.build_targets }}"
           DEPLOY_ENV="${ENV_INPUT:-production}"
+
+          if [ -z "$COMPONENTS" ]; then
+            COMPONENTS="backend"
+          fi
+          DEPLOY_BACKEND="false"
+          IFS=',' read -ra COMPONENT_LIST <<< "$COMPONENTS"
+          for component in "${COMPONENT_LIST[@]}"; do
+            component="${component//[[:space:]]/}"
+            case "$component" in
+              backend|all)
+                DEPLOY_BACKEND="true"
+                ;;
+              "")
+                ;;
+              *)
+                echo "ERROR: deploy-backend only supports components=backend, got: $component" >&2
+                exit 1
+                ;;
+            esac
+          done
+          if [ "$DEPLOY_BACKEND" != "true" ]; then
+            echo "ERROR: no 2SOMEone backend component selected from: $COMPONENTS" >&2
+            exit 1
+          fi
+          echo "components=backend" >> "$GITHUB_OUTPUT"
 
           # workflow_dispatch + env=production: only main or backend-v* tag
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "$DEPLOY_ENV" == "production" ]]; then
