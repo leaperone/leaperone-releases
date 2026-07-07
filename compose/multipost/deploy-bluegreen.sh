@@ -1,5 +1,5 @@
 #!/bin/bash
-# 蓝绿部署 multipost web（PVE LXC 200, production）。
+# 蓝绿部署 multipost web（Germany / production）。
 #
 # 由通用 /opt/apps/bin/deploy.sh 在探测到本文件可执行时 `exec` 调用（无参数）。
 # 也可手动执行：/opt/apps/multipost/production/deploy-bluegreen.sh
@@ -7,8 +7,8 @@
 # 端口: blue=9900  green=9910
 # 镜像: 沿用 .env 的 IMAGE_TAG（现网 = latest）；`up --pull always` 拉最新构建。
 #
-# 范围: 只对 web 做蓝绿（零停机）。video-stt-worker 是无端口单例 worker，backend 是 Germany 唯一
-#       的 cron 单例 —— 两者由主 docker-compose.yml 常驻、每次部署 recreate（瞬断可接受）。
+# 范围: web 做蓝绿（零停机）。video-stt-worker 是无端口单例 worker，backend 是 Germany 唯一
+#       的 cron 单例。DEPLOY_COMPONENTS 可限制本次只部署 web/backend/video-stt-worker。
 #
 # 流量架构（Germany direct origin）：
 #   Cloudflare → Germany Nginx:443（multipost-local.conf，终止 TLS）
@@ -46,6 +46,43 @@ OBSERVE_SECONDS=10
 ORIGIN_PORT=443
 PUBLIC_HOSTS=(multipost.app api.multipost.app)
 
+DEPLOY_COMPONENTS_RAW="${DEPLOY_COMPONENTS:-all}"
+WANT_WEB=false
+WANT_BACKEND=false
+WANT_VIDEO_STT=false
+
+IFS=',' read -ra COMPONENT_LIST <<< "$DEPLOY_COMPONENTS_RAW"
+for component in "${COMPONENT_LIST[@]}"; do
+  component="${component//[[:space:]]/}"
+  case "$component" in
+    web)
+      WANT_WEB=true
+      ;;
+    backend)
+      WANT_BACKEND=true
+      ;;
+    video-stt-worker)
+      WANT_VIDEO_STT=true
+      ;;
+    all)
+      WANT_WEB=true
+      WANT_BACKEND=true
+      WANT_VIDEO_STT=true
+      ;;
+    "")
+      ;;
+    *)
+      echo "ERROR: unknown DEPLOY_COMPONENTS entry: $component" >&2
+      exit 1
+      ;;
+  esac
+done
+if [ "$WANT_WEB" = false ] && [ "$WANT_BACKEND" = false ] && [ "$WANT_VIDEO_STT" = false ]; then
+  echo "ERROR: no components selected from DEPLOY_COMPONENTS=${DEPLOY_COMPONENTS_RAW}" >&2
+  exit 1
+fi
+echo "==> selected components: web=${WANT_WEB} backend=${WANT_BACKEND} video-stt-worker=${WANT_VIDEO_STT}"
+
 # ── 部署锁（flock）：非阻塞，拿不到锁说明已有部署在跑，直接退出 ──────────────────
 LOCK_FILE=/run/multipost-bluegreen.lock
 { exec 9>"$LOCK_FILE"; } 2>/dev/null || exec 9>/tmp/multipost-bluegreen.lock
@@ -75,7 +112,52 @@ probe_via_origin() {
     "https://${host}:${ORIGIN_PORT}${path}" >/dev/null 2>&1
 }
 
+ensure_resident_services() {
+  local services=()
+  local compose_args=(-f "$WORKER_COMPOSE")
+  if [ "$WANT_VIDEO_STT" = true ]; then
+    services+=(video-stt-worker)
+  fi
+  if [ "$WANT_BACKEND" = true ]; then
+    services+=(backend)
+    compose_args+=(--profile backend)
+  fi
+  if [ "${#services[@]}" -eq 0 ]; then
+    echo "==> no resident services selected; skipping worker/backend update"
+    return 0
+  fi
+  # 不加 --remove-orphans：避免误删尚保留作回滚的 legacy web 容器（multipost-web-production）。
+  echo "==> ensuring resident services are up to date: ${services[*]}"
+  docker compose "${compose_args[@]}" up -d --pull always "${services[@]}"
+}
+
+run_post_deploy_scripts() {
+  if [ -d "$PROJECT_DIR/scripts" ]; then
+    echo "==> Running post-deploy scripts..."
+    for script in "$PROJECT_DIR"/scripts/*; do
+      if [ -f "$script" ] && [ -x "$script" ]; then
+        echo "--> $(basename "$script")"; "$script"
+      fi
+    done
+  fi
+}
+
+cleanup_images() {
+  docker image prune -f >/dev/null 2>&1 || true
+}
+
 cd "$PROJECT_DIR"
+
+if [ "$WANT_WEB" != true ]; then
+  echo "==> web not selected; skipping blue-green upstream switch"
+  ensure_resident_services
+  if [ "$WANT_VIDEO_STT" = true ]; then
+    run_post_deploy_scripts
+  fi
+  cleanup_images
+  echo "==> deploy complete: selected non-web components updated"
+  exit 0
+fi
 
 # ── PREFLIGHT：源站 conf 必须已 bootstrap（含 upstream + proxy_pass multipost_web_active）─────
 if [ ! -f "$ACTIVE_CONF" ]; then
@@ -173,23 +255,16 @@ if [ "$(docker inspect -f '{{.State.Running}}' "$LEGACY_NAME" 2>/dev/null || ech
   docker stop "$LEGACY_NAME" >/dev/null 2>&1 || true
 fi
 
-# 7. 常驻 worker + backend(Germany 单例)：拉新镜像并保证在跑。--profile backend 启用 backend。
-#    不加 --remove-orphans：避免误删尚保留作回滚的 legacy web 容器（multipost-web-production）。
-echo "==> ensuring resident workers + backend are up to date"
-docker compose -f "$WORKER_COMPOSE" --profile backend up -d --pull always
+# 7. 常驻 worker + backend(Germany 单例)：按 DEPLOY_COMPONENTS 选择性拉新镜像并保证在跑。
+ensure_resident_services
 
-# 8. 跑可执行的 post-deploy scripts/*（如带宽限制脚本）。
-if [ -d "$PROJECT_DIR/scripts" ]; then
-  echo "==> Running post-deploy scripts..."
-  for script in "$PROJECT_DIR"/scripts/*; do
-    if [ -f "$script" ] && [ -x "$script" ]; then
-      echo "--> $(basename "$script")"; "$script"
-    fi
-  done
+# 8. 跑可执行的 post-deploy scripts/*（当前用于 worker 带宽限制）。
+if [ "$WANT_VIDEO_STT" = true ]; then
+  run_post_deploy_scripts
 fi
 
 # 9. 清理悬空镜像（与 legacy 行为一致）
-docker image prune -f >/dev/null 2>&1 || true
+cleanup_images
 
 echo "==> deploy complete: active=${idle_color}:${idle_port}; old (:${current_port}) stopped (kept for rollback)"
 echo "    rollback: start 旧色/${LEGACY_NAME} -> 探 :${current_port} 健康 -> sed upstream 端口改回 ${current_port} -> nginx -t && nginx -s reload"

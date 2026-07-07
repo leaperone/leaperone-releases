@@ -15,8 +15,7 @@ jobs:
       is_deployable: ${{ steps.resolve.outputs.is_deployable }}
       deploy_env: ${{ steps.resolve.outputs.deploy_env }}
       deploy_de: ${{ steps.resolve.outputs.deploy_de }}
-      deploy_hk: ${{ steps.resolve.outputs.deploy_hk }}
-      deploy_pve: ${{ steps.resolve.outputs.deploy_pve }}
+      components: ${{ steps.resolve.outputs.components }}
       build_web: ${{ steps.resolve.outputs.build_web }}
       build_backend: ${{ steps.resolve.outputs.build_backend }}
       build_video_stt: ${{ steps.resolve.outputs.build_video_stt }}
@@ -26,60 +25,57 @@ jobs:
         run: |
           REF="${{ github.event.client_payload.ref }}"
           ENV_INPUT="${{ github.event.client_payload.env }}"
-          TARGETS="${{ github.event.client_payload.targets }}"
-          BUILD_TARGETS="${{ github.event.client_payload.build_targets }}"
+          COMPONENTS="${{ github.event.client_payload.components || github.event.client_payload.build_targets }}"
 
           DEPLOY_ENV="production"
           IS_DEPLOYABLE="true"
+          DEPLOY_DE="true"
 
-          if [ -z "$TARGETS" ]; then
-            TARGETS="de"
-          fi
-
-          DEPLOY_DE="false"
-          DEPLOY_HK="false"
-          DEPLOY_PVE="false"
-
-          if [[ "$TARGETS" == *"de"* ]]; then
-            DEPLOY_DE="true"
-          fi
-
-          if [[ "$TARGETS" == *"hk"* ]]; then
-            DEPLOY_HK="true"
-          fi
-
-          if [[ "$TARGETS" == *"pve"* ]]; then
-            DEPLOY_PVE="true"
-          fi
-
-          # Resolve build targets (default: all)
-          if [ -z "$BUILD_TARGETS" ]; then
-            BUILD_TARGETS="web,backend,video-stt-worker"
+          if [ -z "$COMPONENTS" ]; then
+            if [[ "$REF" =~ ^(refs/tags/)?worker-v ]]; then
+              COMPONENTS="video-stt-worker"
+            else
+              COMPONENTS="web,backend"
+            fi
           fi
 
           BUILD_WEB="false"
           BUILD_BACKEND="false"
           BUILD_VIDEO_STT="false"
 
-          if [[ "$BUILD_TARGETS" == *"web"* ]]; then
-            BUILD_WEB="true"
-          fi
-
-          if [[ "$BUILD_TARGETS" == *"backend"* ]]; then
-            BUILD_BACKEND="true"
-          fi
-
-          if [[ "$BUILD_TARGETS" == *"video-stt-worker"* ]]; then
-            BUILD_VIDEO_STT="true"
+          IFS=',' read -ra COMPONENT_LIST <<< "$COMPONENTS"
+          for component in "${COMPONENT_LIST[@]}"; do
+            component="${component//[[:space:]]/}"
+            case "$component" in
+              web)
+                BUILD_WEB="true"
+                ;;
+              backend)
+                BUILD_BACKEND="true"
+                ;;
+              video-stt-worker)
+                BUILD_VIDEO_STT="true"
+                ;;
+              all)
+                BUILD_WEB="true"
+                BUILD_BACKEND="true"
+                BUILD_VIDEO_STT="true"
+                ;;
+              "")
+                ;;
+              *)
+                echo "ERROR: unknown MultiPost component: $component" >&2
+                exit 1
+                ;;
+            esac
+          done
+          if [ "$BUILD_WEB" = "false" ] && [ "$BUILD_BACKEND" = "false" ] && [ "$BUILD_VIDEO_STT" = "false" ]; then
+            echo "ERROR: no MultiPost components selected from: $COMPONENTS" >&2
+            exit 1
           fi
 
           if [ "$ENV_INPUT" != "" ] && [ "$ENV_INPUT" != "$DEPLOY_ENV" ]; then
             echo "ERROR: deploy-multipost only supports env=production, got: $ENV_INPUT" >&2
-            exit 1
-          fi
-
-          if [ "$DEPLOY_DE" = "false" ] && [ "$DEPLOY_HK" = "false" ] && [ "$DEPLOY_PVE" = "false" ]; then
-            echo "ERROR: no valid deploy targets resolved from: $TARGETS" >&2
             exit 1
           fi
 
@@ -105,8 +101,7 @@ jobs:
           echo "is_deployable=$IS_DEPLOYABLE" >> "$GITHUB_OUTPUT"
           echo "deploy_env=$DEPLOY_ENV" >> "$GITHUB_OUTPUT"
           echo "deploy_de=$DEPLOY_DE" >> "$GITHUB_OUTPUT"
-          echo "deploy_hk=$DEPLOY_HK" >> "$GITHUB_OUTPUT"
-          echo "deploy_pve=$DEPLOY_PVE" >> "$GITHUB_OUTPUT"
+          echo "components=$COMPONENTS" >> "$GITHUB_OUTPUT"
           echo "build_web=$BUILD_WEB" >> "$GITHUB_OUTPUT"
           echo "build_backend=$BUILD_BACKEND" >> "$GITHUB_OUTPUT"
           echo "build_video_stt=$BUILD_VIDEO_STT" >> "$GITHUB_OUTPUT"
@@ -367,27 +362,5 @@ jobs:
     with:
       project: multipost
       env: production
-    secrets: inherit
-
-  deploy-hk:
-    needs: [resolve-context, migrate-production]
-    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_hk == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy to HK production
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.ALIYUN_HK_HOST }}
-          username: ${{ secrets.ALIYUN_CN_USERNAME }}
-          port: ${{ secrets.ALIYUN_CN_PORT }}
-          key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
-          script: ${{ secrets.DEPLOY_MULTIPOST_SCRIPT }}
-
-  deploy-pve:
-    needs: [resolve-context, migrate-production]
-    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_pve == 'true'
-    uses: ./.github/workflows/deploy-pve.yml
-    with:
-      project: multipost
-      env: production
+      components: ${{ needs.resolve-context.outputs.components }}
     secrets: inherit

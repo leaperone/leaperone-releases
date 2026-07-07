@@ -14,7 +14,6 @@ jobs:
       pr_number: ${{ steps.resolve.outputs.pr_number }}
       is_deployable: ${{ steps.resolve.outputs.is_deployable }}
       deploy_de: ${{ steps.resolve.outputs.deploy_de }}
-      deploy_pve: ${{ steps.resolve.outputs.deploy_pve }}
       build_web: ${{ steps.resolve.outputs.build_web }}
       build_worker: ${{ steps.resolve.outputs.build_worker }}
       build_tgbot: ${{ steps.resolve.outputs.build_tgbot }}
@@ -23,48 +22,53 @@ jobs:
         id: resolve
         run: |
           REF="${{ github.event.client_payload.ref }}"
-          TARGETS="${{ github.event.client_payload.targets }}"
-          BUILD_TARGETS="${{ github.event.client_payload.build_targets }}"
+          ENV_INPUT="${{ github.event.client_payload.env }}"
+          COMPONENTS="${{ github.event.client_payload.components || github.event.client_payload.build_targets }}"
 
           IS_DEPLOYABLE="true"
+          DEPLOY_DE="true"
 
-          if [ -z "$TARGETS" ]; then
-            TARGETS="de"
+          if [ "$ENV_INPUT" != "" ] && [ "$ENV_INPUT" != "production" ]; then
+            echo "ERROR: deploy-dokilove only supports env=production, got: $ENV_INPUT" >&2
+            exit 1
           fi
 
-          DEPLOY_DE="false"
-          DEPLOY_PVE="false"
-
-          if [[ "$TARGETS" == *"de"* ]]; then
-            DEPLOY_DE="true"
-          fi
-
-          if [[ "$TARGETS" == *"pve"* ]]; then
-            DEPLOY_PVE="true"
-          fi
-
-          if [ -z "$BUILD_TARGETS" ]; then
-            BUILD_TARGETS="web,worker,tg-bot"
+          if [ -z "$COMPONENTS" ]; then
+            COMPONENTS="web"
           fi
 
           BUILD_WEB="false"
           BUILD_WORKER="false"
           BUILD_TGBOT="false"
 
-          if [[ "$BUILD_TARGETS" == *"web"* ]]; then
-            BUILD_WEB="true"
-          fi
-
-          if [[ "$BUILD_TARGETS" == *"worker"* ]]; then
-            BUILD_WORKER="true"
-          fi
-
-          if [[ "$BUILD_TARGETS" == *"tg-bot"* ]]; then
-            BUILD_TGBOT="true"
-          fi
-
-          if [ "$DEPLOY_DE" = "false" ] && [ "$DEPLOY_PVE" = "false" ]; then
-            echo "ERROR: no valid deploy targets resolved from: $TARGETS" >&2
+          IFS=',' read -ra COMPONENT_LIST <<< "$COMPONENTS"
+          for component in "${COMPONENT_LIST[@]}"; do
+            component="${component//[[:space:]]/}"
+            case "$component" in
+              web)
+                BUILD_WEB="true"
+                ;;
+              worker)
+                BUILD_WORKER="true"
+                ;;
+              tg-bot)
+                BUILD_TGBOT="true"
+                ;;
+              all)
+                BUILD_WEB="true"
+                BUILD_WORKER="true"
+                BUILD_TGBOT="true"
+                ;;
+              "")
+                ;;
+              *)
+                echo "ERROR: unknown DokiLove component: $component" >&2
+                exit 1
+                ;;
+            esac
+          done
+          if [ "$BUILD_WEB" = "false" ] && [ "$BUILD_WORKER" = "false" ] && [ "$BUILD_TGBOT" = "false" ]; then
+            echo "ERROR: no DokiLove components selected from: $COMPONENTS" >&2
             exit 1
           fi
 
@@ -89,7 +93,6 @@ jobs:
           echo "pr_number=" >> "$GITHUB_OUTPUT"
           echo "is_deployable=$IS_DEPLOYABLE" >> "$GITHUB_OUTPUT"
           echo "deploy_de=$DEPLOY_DE" >> "$GITHUB_OUTPUT"
-          echo "deploy_pve=$DEPLOY_PVE" >> "$GITHUB_OUTPUT"
           echo "build_web=$BUILD_WEB" >> "$GITHUB_OUTPUT"
           echo "build_worker=$BUILD_WORKER" >> "$GITHUB_OUTPUT"
           echo "build_tgbot=$BUILD_TGBOT" >> "$GITHUB_OUTPUT"
@@ -350,49 +353,6 @@ jobs:
       group: dokilove-de-deploy
       cancel-in-progress: false
     uses: ./.github/workflows/deploy-de.yml
-    with:
-      project: dokilove-tg-bot
-      env: production
-    secrets: inherit
-
-  deploy-pve-web:
-    needs: [resolve-context, migrate-production]
-    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_pve == 'true' && needs.resolve-context.outputs.build_web == 'true'
-    # Serialize with deploy-pve-worker / deploy-pve-tgbot: all three deploy to
-    # the same PVE app LXC and pull layer-sharing images; concurrent
-    # `docker compose pull` races the containerd overlayfs snapshotter
-    # ("failed to extract layer ... link ...").
-    concurrency:
-      group: dokilove-pve-deploy
-      cancel-in-progress: false
-      queue: max
-    uses: ./.github/workflows/deploy-pve.yml
-    with:
-      project: dokilove
-      env: production
-    secrets: inherit
-
-  deploy-pve-worker:
-    needs: [resolve-context, migrate-production]
-    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_pve == 'true' && needs.resolve-context.outputs.build_worker == 'true'
-    concurrency:
-      group: dokilove-pve-deploy
-      cancel-in-progress: false
-      queue: max
-    uses: ./.github/workflows/deploy-pve.yml
-    with:
-      project: dokilove-worker
-      env: production
-    secrets: inherit
-
-  deploy-pve-tgbot:
-    needs: [resolve-context, migrate-production]
-    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_pve == 'true' && needs.resolve-context.outputs.build_tgbot == 'true'
-    concurrency:
-      group: dokilove-pve-deploy
-      cancel-in-progress: false
-      queue: max
-    uses: ./.github/workflows/deploy-pve.yml
     with:
       project: dokilove-tg-bot
       env: production

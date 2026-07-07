@@ -12,12 +12,47 @@ jobs:
     outputs:
       pr_number: ${{ steps.set-ref.outputs.pr_number }}
       is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
+      components: ${{ steps.set-ref.outputs.components }}
 
     steps:
       - name: Validate and set ref
         id: set-ref
         run: |
           REF="${{ github.event.client_payload.ref }}"
+          COMPONENTS="${{ github.event.client_payload.components || github.event.client_payload.build_targets }}"
+          if [ -z "$COMPONENTS" ]; then
+            COMPONENTS="web,api"
+          fi
+          DEPLOY_WEB="false"
+          DEPLOY_API="false"
+          IFS=',' read -ra COMPONENT_LIST <<< "$COMPONENTS"
+          for component in "${COMPONENT_LIST[@]}"; do
+            component="${component//[[:space:]]/}"
+            case "$component" in
+              web)
+                DEPLOY_WEB="true"
+                ;;
+              api)
+                DEPLOY_API="true"
+                ;;
+              all)
+                DEPLOY_WEB="true"
+                DEPLOY_API="true"
+                ;;
+              "")
+                ;;
+              *)
+                echo "ERROR: unknown LEAPERone component: $component" >&2
+                exit 1
+                ;;
+            esac
+          done
+          if [ "$DEPLOY_WEB" != "true" ] || [ "$DEPLOY_API" != "true" ]; then
+            echo "ERROR: deploy-leaperone currently deploys web+api together; use components=web,api or all" >&2
+            exit 1
+          fi
+          echo "components=web,api" >> $GITHUB_OUTPUT
+
           if [ -z "$REF" ]; then
             echo "ref=main" >> $GITHUB_OUTPUT
             echo "pr_number=" >> $GITHUB_OUTPUT

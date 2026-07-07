@@ -34,6 +34,7 @@ jobs:
       deploy_env: ${{ steps.set-ref.outputs.deploy_env }}
       source_sha: ${{ steps.set-ref.outputs.source_sha }}
       pointed_tag: ${{ steps.detect-tag.outputs.pointed_tag }}
+      components: ${{ steps.set-ref.outputs.components }}
     steps:
       - name: Validate and set ref
         id: set-ref
@@ -42,6 +43,7 @@ jobs:
         run: |
           REF="${{ github.event.inputs.ref || github.event.client_payload.ref }}"
           ENV_INPUT="${{ github.event.inputs.env || github.event.client_payload.env }}"
+          COMPONENTS="${{ github.event.client_payload.components || github.event.client_payload.build_targets }}"
           SOURCE_SHA=""
           if [[ "$RAW_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             SOURCE_SHA="$RAW_SOURCE_SHA"
@@ -50,6 +52,31 @@ jobs:
 
           # Default deploy environment
           DEPLOY_ENV="${ENV_INPUT:-production}"
+
+          if [ -z "$COMPONENTS" ]; then
+            COMPONENTS="web"
+          fi
+          DEPLOY_WEB="false"
+          IFS=',' read -ra COMPONENT_LIST <<< "$COMPONENTS"
+          for component in "${COMPONENT_LIST[@]}"; do
+            component="${component//[[:space:]]/}"
+            case "$component" in
+              web|all)
+                DEPLOY_WEB="true"
+                ;;
+              "")
+                ;;
+              *)
+                echo "ERROR: deploy-twosomeone only supports components=web, got: $component" >&2
+                exit 1
+                ;;
+            esac
+          done
+          if [ "$DEPLOY_WEB" != "true" ]; then
+            echo "ERROR: no 2SOMEone web component selected from: $COMPONENTS" >&2
+            exit 1
+          fi
+          echo "components=web" >> "$GITHUB_OUTPUT"
 
           # workflow_dispatch + env=production: restrict to main or web-v* tag (security)
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "$DEPLOY_ENV" == "production" ]]; then

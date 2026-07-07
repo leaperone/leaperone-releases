@@ -11,6 +11,11 @@ on:
         required: true
         type: string
         description: "Deploy environment (production / beta)"
+      components:
+        required: false
+        type: string
+        default: ""
+        description: "Optional comma-separated component intent for component-aware deploy scripts"
       runner:
         required: false
         type: string
@@ -38,10 +43,13 @@ jobs:
 
       - name: Deploy
         uses: appleboy/ssh-action@v1.0.0
+        env:
+          DEPLOY_COMPONENTS: ${{ inputs.components }}
         with:
           host: ${{ secrets.DE_APP_HOST }}
           username: ${{ secrets.DE_APP_USERNAME }}
           key: ${{ secrets.DE_APP_SSH_KEY }}
           port: ${{ secrets.DE_APP_PORT }}
           command_timeout: 20m
+          envs: DEPLOY_COMPONENTS
           script: /opt/apps/bin/deploy.sh ${{ inputs.project }} ${{ inputs.env }}
