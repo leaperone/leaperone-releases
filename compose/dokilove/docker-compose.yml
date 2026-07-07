@@ -2,7 +2,7 @@ name: dokilove-${DEPLOY_ENV:-production}
 
 services:
   web:
-    image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/dokilove:${IMAGE_TAG:-latest}
+    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/dokilove:${IMAGE_TAG:-latest}
     container_name: dokilove-web-${DEPLOY_ENV:-production}
     env_file:
       - .env
@@ -10,4 +10,10 @@ services:
       - '127.0.0.1:${WEB_PORT:-9810}:3000'
     extra_hosts:
       - 'host.docker.internal:host-gateway'
+    networks:
+      - leaperone-prod
     restart: unless-stopped
+
+networks:
+  leaperone-prod:
+    external: true

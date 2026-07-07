@@ -2,7 +2,7 @@ name: dokilove-worker-${DEPLOY_ENV:-production}
 
 services:
   worker:
-    image: ${REGISTRY_HOST:-registry.cn-shanghai.aliyuncs.com}/leaperone/dokilove:${WORKER_IMAGE_TAG:-worker-latest}
+    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/dokilove:${WORKER_IMAGE_TAG:-worker-latest}
     container_name: dokilove-worker-${DEPLOY_ENV:-production}
     env_file:
       - .env
@@ -16,20 +16,35 @@ services:
       # MissAV runs on its own hourly cron (MISSAV_CRON, default "0 * * * *");
       # cap each run to 30 videos so an hour's worth fits the slow CF solving.
       VIDEO_CRAWL_LIMIT: "30"
+      # Image rehosting to jp Garage. Values come from this project's .env on the
+      # target host so compose updates do not carry secrets.
+      JP_OSS_ENDPOINT: ${JP_OSS_ENDPOINT:-https://lb-jp.leaper.one}
+      JP_OSS_KEY_ID: ${JP_OSS_KEY_ID}
+      JP_OSS_SECRET: ${JP_OSS_SECRET}
+      JP_OSS_BUCKET: ${JP_OSS_BUCKET:-media}
+      JP_OSS_REGION: ${JP_OSS_REGION:-garage}
+      JP_OSS_MAX_BYTES: ${JP_OSS_MAX_BYTES:-10485760}
+      JP_OSS_SOURCE_ALLOWLIST: ${JP_OSS_SOURCE_ALLOWLIST}
+      OSS_PUBLIC_BASE_URL: ${OSS_PUBLIC_BASE_URL:-https://lb.doki.love}
+      CARD_COVER_REHOST_ENABLED: ${CARD_COVER_REHOST_ENABLED:-false}
     ports:
       - '127.0.0.1:${WORKER_PORT:-3100}:3100'
+    networks:
+      - leaperone-prod
     restart: unless-stopped
     depends_on:
       - flaresolverr
 
   flaresolverr:
-    # ghcr.io is unreachably slow from the PVE host (docker daemon has no tunnel),
-    # so pull via the NJU ghcr mirror; image content is identical.
-    image: ghcr.nju.edu.cn/flaresolverr/flaresolverr:latest
+    # Germany pulls all production images from the Aliyun Hong Kong ACR mirror.
+    # Mirror source: ghcr.io/flaresolverr/flaresolverr.
+    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/flaresolverr:${FLARESOLVERR_IMAGE_TAG:-latest}
     container_name: dokilove-flaresolverr-${DEPLOY_ENV:-production}
     environment:
       LOG_LEVEL: info
       TZ: Asia/Shanghai
+    networks:
+      - leaperone-prod
     restart: unless-stopped
     # No published ports: only the worker reaches it via the internal compose
     # network (service name `flaresolverr`), so container-to-container traffic
@@ -41,3 +56,7 @@ services:
     # project's .env — the worker forwards that proxy to FlareSolverr per request.
     # For hardening, restrict this service's egress at the host firewall to the
     # outbound proxy + missav hosts only.
+
+networks:
+  leaperone-prod:
+    external: true

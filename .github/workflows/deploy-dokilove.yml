@@ -13,7 +13,7 @@ jobs:
       ref: ${{ steps.resolve.outputs.ref }}
       pr_number: ${{ steps.resolve.outputs.pr_number }}
       is_deployable: ${{ steps.resolve.outputs.is_deployable }}
-      deploy_hk: ${{ steps.resolve.outputs.deploy_hk }}
+      deploy_de: ${{ steps.resolve.outputs.deploy_de }}
       deploy_pve: ${{ steps.resolve.outputs.deploy_pve }}
       build_web: ${{ steps.resolve.outputs.build_web }}
       build_worker: ${{ steps.resolve.outputs.build_worker }}
@@ -29,14 +29,14 @@ jobs:
           IS_DEPLOYABLE="true"
 
           if [ -z "$TARGETS" ]; then
-            TARGETS="hk,pve"
+            TARGETS="de"
           fi
 
-          DEPLOY_HK="false"
+          DEPLOY_DE="false"
           DEPLOY_PVE="false"
 
-          if [[ "$TARGETS" == *"hk"* ]]; then
-            DEPLOY_HK="true"
+          if [[ "$TARGETS" == *"de"* ]]; then
+            DEPLOY_DE="true"
           fi
 
           if [[ "$TARGETS" == *"pve"* ]]; then
@@ -63,7 +63,7 @@ jobs:
             BUILD_TGBOT="true"
           fi
 
-          if [ "$DEPLOY_HK" = "false" ] && [ "$DEPLOY_PVE" = "false" ]; then
+          if [ "$DEPLOY_DE" = "false" ] && [ "$DEPLOY_PVE" = "false" ]; then
             echo "ERROR: no valid deploy targets resolved from: $TARGETS" >&2
             exit 1
           fi
@@ -88,7 +88,7 @@ jobs:
           echo "ref=$RESOLVED_REF" >> "$GITHUB_OUTPUT"
           echo "pr_number=" >> "$GITHUB_OUTPUT"
           echo "is_deployable=$IS_DEPLOYABLE" >> "$GITHUB_OUTPUT"
-          echo "deploy_hk=$DEPLOY_HK" >> "$GITHUB_OUTPUT"
+          echo "deploy_de=$DEPLOY_DE" >> "$GITHUB_OUTPUT"
           echo "deploy_pve=$DEPLOY_PVE" >> "$GITHUB_OUTPUT"
           echo "build_web=$BUILD_WEB" >> "$GITHUB_OUTPUT"
           echo "build_worker=$BUILD_WORKER" >> "$GITHUB_OUTPUT"
@@ -291,10 +291,69 @@ jobs:
       - name: Install pnpm
         run: corepack enable && corepack prepare pnpm@11.3.0 --activate
 
+      - name: Open DE Postgres SSH tunnel
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+        run: |
+          test -n "$DE_APP_HOST" || { echo "DE_APP_HOST required"; exit 1; }
+          test -n "$DE_APP_USERNAME" || { echo "DE_APP_USERNAME required"; exit 1; }
+          test -n "$DE_APP_SSH_KEY" || { echo "DE_APP_SSH_KEY required"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DE_APP_SSH_KEY" > ~/.ssh/de_app_key
+          chmod 600 ~/.ssh/de_app_key
+          ssh-keyscan -p "${DE_APP_PORT:-22}" "$DE_APP_HOST" >> ~/.ssh/known_hosts
+          ssh -fN \
+            -i ~/.ssh/de_app_key \
+            -p "${DE_APP_PORT:-22}" \
+            -o ExitOnForwardFailure=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=3 \
+            -L 127.0.0.1:15432:127.0.0.1:5432 \
+            "${DE_APP_USERNAME}@${DE_APP_HOST}"
+
       - name: Run Database Migrations
         run: |
           pnpm install --filter @dokilove/web
           DATABASE_URL="${{ secrets.DOKILOVE_DATABASE_URL }}" pnpm --filter @dokilove/web db:migrate
+
+  deploy-de-web:
+    needs: [resolve-context, migrate-production]
+    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_de == 'true' && needs.resolve-context.outputs.build_web == 'true'
+    concurrency:
+      group: dokilove-de-deploy
+      cancel-in-progress: false
+    uses: ./.github/workflows/deploy-de.yml
+    with:
+      project: dokilove
+      env: production
+    secrets: inherit
+
+  deploy-de-worker:
+    needs: [resolve-context, migrate-production]
+    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_de == 'true' && needs.resolve-context.outputs.build_worker == 'true'
+    concurrency:
+      group: dokilove-de-deploy
+      cancel-in-progress: false
+    uses: ./.github/workflows/deploy-de.yml
+    with:
+      project: dokilove-worker
+      env: production
+    secrets: inherit
+
+  deploy-de-tgbot:
+    needs: [resolve-context, migrate-production]
+    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_de == 'true' && needs.resolve-context.outputs.build_tgbot == 'true'
+    concurrency:
+      group: dokilove-de-deploy
+      cancel-in-progress: false
+    uses: ./.github/workflows/deploy-de.yml
+    with:
+      project: dokilove-tg-bot
+      env: production
+    secrets: inherit
 
   deploy-pve-web:
     needs: [resolve-context, migrate-production]

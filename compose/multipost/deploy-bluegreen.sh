@@ -7,28 +7,27 @@
 # 端口: blue=9900  green=9910
 # 镜像: 沿用 .env 的 IMAGE_TAG（现网 = latest）；`up --pull always` 拉最新构建。
 #
-# 范围: 只对 web 做蓝绿（零停机）。video-stt-worker 是无端口单例 worker，backend 是 PVE 唯一
+# 范围: 只对 web 做蓝绿（零停机）。video-stt-worker 是无端口单例 worker，backend 是 Germany 唯一
 #       的 cron 单例 —— 两者由主 docker-compose.yml 常驻、每次部署 recreate（瞬断可接受）。
 #
-# 流量架构（multipost 不经本机 nginx 的 server_name，而是经 frp + 源站 TLS 终止）：
-#   multipost.app → HK:443 stream(ssl_preread,不解密) → frps:19900 → 隧道 → 本机 frpc
-#     → 127.0.0.1:9443（本机 nginx multipost-local.conf，终止 TLS）→ upstream multipost_web_active
-#     → web 容器(blue:9900 / green:9910)。蓝绿只切 multipost_web_active 的端口。
+# 流量架构（Germany direct origin）：
+#   Cloudflare → Germany Nginx:443（multipost-local.conf，终止 TLS）
+#     → upstream multipost_web_active → web 容器(blue:9900 / green:9910)。
+#   蓝绿只切 multipost_web_active 的端口。
 #
 # ── 设计要点（移植自 twosomeone deploy-bluegreen.sh，已在生产验证）──────────────
 #  - flock 串行化：同一时刻只允许一个部署，消除 upstream 解析→改写的 TOCTOU。
 #  - preflight：起 idle 前强制校验 multipost-local.conf 存在且 proxy_pass multipost_web_active。
 #  - fail-closed 解析 active 端口：upstream 块必须恰好一行 server 127.0.0.1:<port> 且 ∈ {9900,9910}。
 #  - 切流原子化：备份 conf → sed 改 upstream 端口 → nginx -t → reload；任一步失败回滚并 reload、down idle。
-#  - 切完经源站 9443(proxy_protocol+TLS) 端到端复验 /api/health 再停旧；复验失败自动回滚，旧色零中断。
+#  - 切完经本机 Nginx:443 + SNI 端到端复验 /api/health 再停旧；复验失败自动回滚，旧色零中断。
 #  - 停旧色按 compose project / legacy 容器名，不靠 `docker ps --filter publish`。
 #
 # ── 首次 BOOTSTRAP（人工一次性；详见 BLUEGREEN.md）──────────────────────────────
-#  1) acme 签 *.multipost.app 证书到 /etc/nginx/ssl/multipost.app/（同 2some.ren）。
-#  2) 装 multipost-local.conf 到 sites-enabled（listen 9443 ssl proxy_protocol + upstream 9900）。
-#  3) HK: stream map 把 multipost.app/api.multipost.app 指向直透源站的 upstream；停 7443 的 L7 vhost。
-#  4) frpc multipost.toml localPort 9900→9443，docker restart frpc。
-#  5) 首次跑本脚本：9900 → green:9910 → 切 upstream → 停 legacy 容器。此后 blue↔green 交替。
+#  1) acme 签 multipost.app/api.multipost.app 证书到 /etc/nginx/ssl/multipost.app/。
+#  2) 装 multipost-local.conf 到 sites-enabled（listen 443 ssl + upstream 9900）。
+#  3) 确认 Cloudflare DNS 指向 Germany origin。
+#  4) 首次跑本脚本：9900 → green:9910 → 切 upstream → 停 legacy 容器。此后 blue↔green 交替。
 set -euo pipefail
 
 PROJECT_DIR=/opt/apps/multipost/production
@@ -43,9 +42,9 @@ HEALTH_PATH=/api/health
 HEALTH_RETRIES=30
 HEALTH_INTERVAL=2
 OBSERVE_SECONDS=10
-# 源站 TLS 终止 server（multipost-local.conf 内）的本机端口；端到端复验经此口（proxy_protocol）。
-ORIGIN_PORT=9443
-PUBLIC_HOSTS=(multipost.app)
+# 源站 TLS 终止 server（multipost-local.conf 内）的本机端口；端到端复验经此口。
+ORIGIN_PORT=443
+PUBLIC_HOSTS=(multipost.app api.multipost.app)
 
 # ── 部署锁（flock）：非阻塞，拿不到锁说明已有部署在跑，直接退出 ──────────────────
 LOCK_FILE=/run/multipost-bluegreen.lock
@@ -68,12 +67,12 @@ probe() {
   fi
 }
 
-# 经源站 9443 端到端探（proxy_protocol + TLS + SNI + 路由 + 后端）。源站 listen 带 proxy_protocol，
-# 故必须用 curl --haproxy-protocol 先发 PROXY 头；-k 因我们连 127.0.0.1 而证书 CN 是 multipost.app。
+# 经本机 Nginx:443 端到端探（TLS + SNI + 路由 + 后端）。
 probe_via_origin() {
   local host="$1"
-  curl -fsS -k --haproxy-protocol --max-time 8 --resolve "${host}:${ORIGIN_PORT}:127.0.0.1" \
-    "https://${host}:${ORIGIN_PORT}${HEALTH_PATH}" >/dev/null 2>&1
+  local path="${2:-$HEALTH_PATH}"
+  curl -fsS -k --max-time 8 --resolve "${host}:${ORIGIN_PORT}:127.0.0.1" \
+    "https://${host}:${ORIGIN_PORT}${path}" >/dev/null 2>&1
 }
 
 cd "$PROJECT_DIR"
@@ -145,7 +144,11 @@ if ! probe "http://127.0.0.1:${idle_port}${HEALTH_PATH}"; then
   echo "ERROR: idle backend ${idle_port} unhealthy after switch." >&2; verify_ok=0
 fi
 for host in "${PUBLIC_HOSTS[@]}"; do
-  if ! probe_via_origin "$host"; then
+  path="$HEALTH_PATH"
+  if [ "$host" = "api.multipost.app" ]; then
+    path="/health"
+  fi
+  if ! probe_via_origin "$host" "$path"; then
     echo "ERROR: post-switch probe via origin :${ORIGIN_PORT} failed for ${host}." >&2; verify_ok=0
   fi
 done
@@ -160,7 +163,7 @@ if [ "$verify_ok" != 1 ]; then
   exit 1
 fi
 rm -f "$backup"
-echo "==> verified: multipost.app healthy via nginx on ${idle_color}:${idle_port}"
+echo "==> verified: multipost hosts healthy via nginx on ${idle_color}:${idle_port}"
 
 # 6. 停旧色（按 compose project；首迁额外停 legacy 单容器）。均保留容器供回滚。
 echo "==> stopping previous color project multipost-web-${old_color} (if any)"
@@ -170,7 +173,7 @@ if [ "$(docker inspect -f '{{.State.Running}}' "$LEGACY_NAME" 2>/dev/null || ech
   docker stop "$LEGACY_NAME" >/dev/null 2>&1 || true
 fi
 
-# 7. 常驻 worker + backend(PVE 单例)：拉新镜像并保证在跑。--profile backend 启用 backend。
+# 7. 常驻 worker + backend(Germany 单例)：拉新镜像并保证在跑。--profile backend 启用 backend。
 #    不加 --remove-orphans：避免误删尚保留作回滚的 legacy web 容器（multipost-web-production）。
 echo "==> ensuring resident workers + backend are up to date"
 docker compose -f "$WORKER_COMPOSE" --profile backend up -d --pull always
