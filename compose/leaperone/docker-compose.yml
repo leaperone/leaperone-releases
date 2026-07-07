@@ -1,0 +1,36 @@
+name: leaperone-${DEPLOY_ENV:-production}
+
+services:
+  web:
+    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/leaperone:${WEB_IMAGE_TAG:-web-latest}
+    container_name: leaperone-web-${DEPLOY_ENV:-production}
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:${WEB_PORT:-9800}:3000"
+    networks:
+      - leaperone-prod
+    restart: unless-stopped
+
+  api:
+    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/leaperone:${API_IMAGE_TAG:-api-latest}
+    container_name: leaperone-api-${DEPLOY_ENV:-production}
+    env_file:
+      - .env
+    environment:
+      PORT: 9000
+      DENO_ENV: production
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
+      ENABLE_IMAGE_WORKER: ${ENABLE_IMAGE_WORKER:-true}
+      ENABLE_EMAIL_LISTENER: ${ENABLE_EMAIL_LISTENER:-false}
+      ENABLE_TEMP_IMAGE_SERVER: ${ENABLE_TEMP_IMAGE_SERVER:-true}
+      TEMP_IMAGE_BASE_URL: ${TEMP_IMAGE_BASE_URL:-https://api.leaper.one/temp-images}
+    ports:
+      - "127.0.0.1:${API_PORT:-9801}:9000"
+    networks:
+      - leaperone-prod
+    restart: unless-stopped
+
+networks:
+  leaperone-prod:
+    external: true
