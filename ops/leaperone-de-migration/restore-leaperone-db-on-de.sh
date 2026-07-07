@@ -17,10 +17,12 @@ fi
 DE_DIR="${DE_BACKUP_BASE}/${STAMP}"
 
 {
-  printf '%s\n' "${LEAPERONE_DB_APP_PASSWORD}"
-  cat <<REMOTE
+  cat <<REMOTE_HEAD
 set -euo pipefail
 read -r APP_PASSWORD
+REMOTE_HEAD
+  printf '%s\n' "${LEAPERONE_DB_APP_PASSWORD}"
+  cat <<REMOTE
 DE_DIR='${DE_DIR}'
 DB_NAME='${DB_NAME}'
 APP_ROLE='${APP_ROLE}'
