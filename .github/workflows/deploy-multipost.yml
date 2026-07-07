@@ -14,6 +14,7 @@ jobs:
       pr_number: ${{ steps.resolve.outputs.pr_number }}
       is_deployable: ${{ steps.resolve.outputs.is_deployable }}
       deploy_env: ${{ steps.resolve.outputs.deploy_env }}
+      deploy_de: ${{ steps.resolve.outputs.deploy_de }}
       deploy_hk: ${{ steps.resolve.outputs.deploy_hk }}
       deploy_pve: ${{ steps.resolve.outputs.deploy_pve }}
       build_web: ${{ steps.resolve.outputs.build_web }}
@@ -32,11 +33,16 @@ jobs:
           IS_DEPLOYABLE="true"
 
           if [ -z "$TARGETS" ]; then
-            TARGETS="hk,pve"
+            TARGETS="de"
           fi
 
+          DEPLOY_DE="false"
           DEPLOY_HK="false"
           DEPLOY_PVE="false"
+
+          if [[ "$TARGETS" == *"de"* ]]; then
+            DEPLOY_DE="true"
+          fi
 
           if [[ "$TARGETS" == *"hk"* ]]; then
             DEPLOY_HK="true"
@@ -72,7 +78,7 @@ jobs:
             exit 1
           fi
 
-          if [ "$DEPLOY_HK" = "false" ] && [ "$DEPLOY_PVE" = "false" ]; then
+          if [ "$DEPLOY_DE" = "false" ] && [ "$DEPLOY_HK" = "false" ] && [ "$DEPLOY_PVE" = "false" ]; then
             echo "ERROR: no valid deploy targets resolved from: $TARGETS" >&2
             exit 1
           fi
@@ -98,6 +104,7 @@ jobs:
           echo "pr_number=" >> "$GITHUB_OUTPUT"
           echo "is_deployable=$IS_DEPLOYABLE" >> "$GITHUB_OUTPUT"
           echo "deploy_env=$DEPLOY_ENV" >> "$GITHUB_OUTPUT"
+          echo "deploy_de=$DEPLOY_DE" >> "$GITHUB_OUTPUT"
           echo "deploy_hk=$DEPLOY_HK" >> "$GITHUB_OUTPUT"
           echo "deploy_pve=$DEPLOY_PVE" >> "$GITHUB_OUTPUT"
           echo "build_web=$BUILD_WEB" >> "$GITHUB_OUTPUT"
@@ -315,6 +322,29 @@ jobs:
           chmod +x /tmp/atlas
           sudo mv /tmp/atlas /usr/local/bin/atlas
 
+      - name: Open DE Postgres SSH tunnel
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+        run: |
+          test -n "$DE_APP_HOST" || { echo "DE_APP_HOST required"; exit 1; }
+          test -n "$DE_APP_USERNAME" || { echo "DE_APP_USERNAME required"; exit 1; }
+          test -n "$DE_APP_SSH_KEY" || { echo "DE_APP_SSH_KEY required"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DE_APP_SSH_KEY" > ~/.ssh/de_app_key
+          chmod 600 ~/.ssh/de_app_key
+          ssh-keyscan -p "${DE_APP_PORT:-22}" "$DE_APP_HOST" >> ~/.ssh/known_hosts
+          ssh -fN \
+            -i ~/.ssh/de_app_key \
+            -p "${DE_APP_PORT:-22}" \
+            -o ExitOnForwardFailure=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=3 \
+            -L 127.0.0.1:15432:127.0.0.1:5432 \
+            "${DE_APP_USERNAME}@${DE_APP_HOST}"
+
       - name: Run database migrations (Atlas)
         env:
           MULTIPOST_DATABASE_URL: ${{ secrets.MULTIPOST_DATABASE_URL }}
@@ -329,6 +359,15 @@ jobs:
           ')"
           export MULTIPOST_DATABASE_URL
           atlas migrate apply --env production --config file://db/atlas/atlas.hcl
+
+  deploy-de:
+    needs: [resolve-context, migrate-production]
+    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_de == 'true'
+    uses: ./.github/workflows/deploy-de.yml
+    with:
+      project: multipost
+      env: production
+    secrets: inherit
 
   deploy-hk:
     needs: [resolve-context, migrate-production]

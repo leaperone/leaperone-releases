@@ -1,0 +1,35 @@
+name: postgres-${DEPLOY_ENV:-production}
+
+services:
+  postgres:
+    # Germany pulls all production images from the Aliyun Hong Kong ACR mirror.
+    # Mirror source: Docker Official Image postgres:16.14-bookworm.
+    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/postgres:${POSTGRES_IMAGE_TAG:-16.14-bookworm}
+    container_name: postgres-${DEPLOY_ENV:-production}
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      leaperone-prod:
+        aliases:
+          - postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+
+networks:
+  leaperone-prod:
+    external: true
