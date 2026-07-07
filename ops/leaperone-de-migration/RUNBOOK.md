@@ -562,3 +562,30 @@ Do not point traffic back to HK/PVE after DE has accepted writes unless a revers
 - WireGuard address plan for HK -> DE Postgres.
 - Whether image previews stay local temp files or move to OSS.
 - Whether first DE deployment is stop/start or blue-green.
+
+## 12. Execution Record
+
+Executed on 2026-07-07 UTC / 2026-07-08 Asia/Shanghai.
+
+- Final PVE dump stamp: `20260707155657`.
+- Final DE restore: `leaperone_db` restored to DE PostgreSQL as `leaperone_app`; exact row counts matched PVE across 22 tables before cutover.
+- Deployment tag: `web-v0.1.12` (`LEAPERone` commit `49cc38b`).
+- Successful deploy workflow: `leaperone-releases` run `28881078502`.
+- DE runtime:
+  - `leaperone-web-production` healthy on `127.0.0.1:9800`.
+  - `leaperone-api-production` healthy on `127.0.0.1:9801`.
+  - DE `leaperone_db` has active `leaperone_app` connections.
+- DNS cutover:
+  - `A leaper.one -> 159.195.43.38`.
+  - `A api.leaper.one -> 159.195.43.38`.
+  - `CNAME www.leaper.one -> leaper.one`.
+- Public validation from PVE and HK succeeded for:
+  - `https://leaper.one/api/health`
+  - `https://api.leaper.one/health`
+  - `https://www.leaper.one/api/health`
+- HK legacy containers were stopped and their Docker restart policy was changed to `no` to avoid accidental writes to the old PVE database. For a rollback to HK, restore the restart policy or recreate via compose before starting traffic:
+
+  ```bash
+  ssh leaperone@8.217.72.118 -p 220 "docker update --restart=always leaperone-web-leaperone-api-1 leaperone-web-leaperone-web-1"
+  ssh leaperone@8.217.72.118 -p 220 "cd ~/services/leaperone-web && docker compose up -d"
+  ```
