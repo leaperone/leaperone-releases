@@ -140,7 +140,7 @@ jobs:
         if: steps.set-ref.outputs.is_deployable == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       - name: Install pnpm
         if: steps.set-ref.outputs.is_deployable == 'true'
         uses: pnpm/action-setup@v4
