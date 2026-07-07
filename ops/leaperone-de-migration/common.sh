@@ -11,11 +11,16 @@ PVE_BACKUP_BASE="${PVE_BACKUP_BASE:-/root/db-migration}"
 PVE_PG_PORT="${PVE_PG_PORT:-5433}"
 
 cf_api() {
-  : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
-  curl -fsS \
-    -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-    -H "Content-Type: application/json" \
-    "$@"
+  local headers=(-H "Content-Type: application/json")
+  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    headers+=(-H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+  elif [ -n "${CLOUDFLARE_EMAIL:-}" ] && [ -n "${CLOUDFLARE_GLOBAL_API_KEY:-}" ]; then
+    headers+=(-H "X-Auth-Email: ${CLOUDFLARE_EMAIL}" -H "X-Auth-Key: ${CLOUDFLARE_GLOBAL_API_KEY}")
+  else
+    echo "set CLOUDFLARE_API_TOKEN or CLOUDFLARE_EMAIL+CLOUDFLARE_GLOBAL_API_KEY" >&2
+    return 1
+  fi
+  curl -fsS "${headers[@]}" "$@"
 }
 
 zone_id() {
