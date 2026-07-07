@@ -589,3 +589,8 @@ Executed on 2026-07-07 UTC / 2026-07-08 Asia/Shanghai.
   ssh leaperone@8.217.72.118 -p 220 "docker update --restart=always leaperone-web-leaperone-api-1 leaperone-web-leaperone-web-1"
   ssh leaperone@8.217.72.118 -p 220 "cd ~/services/leaperone-web && docker compose up -d"
   ```
+
+- HK legacy Nginx was temporarily changed to proxy cached-DNS traffic to DE instead of local stopped containers:
+  - Backups: `/usr/local/nginx/conf/vhost/api.leaper.one.conf.bak.de-cutover-20260708002421` and `/usr/local/nginx/conf/vhost/leaper.one.conf.bak.de-cutover-20260708002421`.
+  - `api.leaper.one` and `leaper.one` on old HK IP now `proxy_pass https://159.195.43.38` with SNI set to the original host.
+  - This can be removed after DNS caches are safely expired and HK fallback is rebuilt against DE DB.
