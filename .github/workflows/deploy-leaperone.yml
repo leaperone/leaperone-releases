@@ -7,7 +7,7 @@ on:
     types: [deploy-leaperone]
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     outputs:
       pr_number: ${{ steps.set-ref.outputs.pr_number }}
@@ -145,19 +145,49 @@ jobs:
         if: steps.set-ref.outputs.is_deployable == 'true'
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11.5.0
+
+      - name: Validate DE database env
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        env:
+          LEAPERONE_DE_DATABASE_URL: ${{ secrets.LEAPERONE_DE_DATABASE_URL }}
+        run: |
+          test -n "$LEAPERONE_DE_DATABASE_URL" || {
+            echo "LEAPERONE_DE_DATABASE_URL is required for DE migrations"
+            exit 1
+          }
+
+      - name: Open DE Postgres SSH tunnel
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+          DE_APP_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          KEY_FILE="$(mktemp)"
+          printf '%s\n' "$DE_APP_SSH_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          ssh-keyscan -p "$DE_APP_PORT" "$DE_APP_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -fN \
+            -i "$KEY_FILE" \
+            -p "$DE_APP_PORT" \
+            -L 15432:127.0.0.1:5432 \
+            "$DE_APP_USERNAME@$DE_APP_HOST"
+
       - name: Run Database Migrations
         if: steps.set-ref.outputs.is_deployable == 'true'
         run: |
           pnpm install --filter @leaperone/db
-          DATABASE_URL="${{ secrets.LEAPERONE_DATABASE_URL }}" pnpm --filter @leaperone/db db:migrate
+          DATABASE_URL="${{ secrets.LEAPERONE_DE_DATABASE_URL }}" pnpm --filter @leaperone/db db:migrate
 
-      - name: Deploy to Production
-        if: steps.set-ref.outputs.is_deployable == 'true'
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.ALIYUN_HK_HOST }}
-          username: ${{ secrets.ALIYUN_CN_USERNAME }}
-          port: ${{ secrets.ALIYUN_CN_PORT }}
-          key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
-          script: ${{ secrets.DEPLOY_LEAPERONE_SCRIPT }}
+  deploy-de:
+    needs: build
+    if: needs.build.outputs.is_deployable == 'true'
+    uses: ./.github/workflows/deploy-de.yml
+    with:
+      project: leaperone
+      env: production
+    secrets: inherit
