@@ -13,9 +13,13 @@ services:
       # Solving the CF challenge over the host tunnel takes ~60-90s; default 60s
       # times out, so allow more headroom.
       FLARESOLVERR_MAX_TIMEOUT_MS: "120000"
-      # MissAV runs on its own hourly cron (MISSAV_CRON, default "0 * * * *");
-      # cap each run to 30 videos so an hour's worth fits the slow CF solving.
-      VIDEO_CRAWL_LIMIT: "30"
+      # MissAV runs on its own hourly cron (MISSAV_CRON, default "0 * * * *").
+      # FlareSolverr is slow but stable at low parallelism; keep the default
+      # conservative and override from .env only after checking failure rates.
+      VIDEO_CRAWL_LIMIT: "60"
+      MISSAV_CRAWL_CONCURRENCY: "2"
+      MISSAV_BACKFILL_RUN_LIMIT: "60"
+      MISSAV_BACKFILL_CONCURRENCY: "2"
       # Image rehosting to jp Garage. Values come from this project's .env on the
       # target host so compose updates do not carry secrets.
       JP_OSS_ENDPOINT: ${JP_OSS_ENDPOINT:-https://lb-jp.leaper.one}
