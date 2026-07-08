@@ -326,7 +326,7 @@ jobs:
     needs: [resolve-context, migrate-production]
     if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_de == 'true' && needs.resolve-context.outputs.build_web == 'true'
     concurrency:
-      group: dokilove-de-deploy
+      group: dokilove-de-deploy-web
       cancel-in-progress: false
     uses: ./.github/workflows/deploy-de.yml
     with:
@@ -338,7 +338,7 @@ jobs:
     needs: [resolve-context, migrate-production]
     if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_de == 'true' && needs.resolve-context.outputs.build_worker == 'true'
     concurrency:
-      group: dokilove-de-deploy
+      group: dokilove-de-deploy-worker
       cancel-in-progress: false
     uses: ./.github/workflows/deploy-de.yml
     with:
@@ -350,7 +350,7 @@ jobs:
     needs: [resolve-context, migrate-production]
     if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_de == 'true' && needs.resolve-context.outputs.build_tgbot == 'true'
     concurrency:
-      group: dokilove-de-deploy
+      group: dokilove-de-deploy-tgbot
       cancel-in-progress: false
     uses: ./.github/workflows/deploy-de.yml
     with:
