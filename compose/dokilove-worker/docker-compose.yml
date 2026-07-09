@@ -7,7 +7,8 @@ services:
     env_file:
       - .env
     extra_hosts:
-      # Worker writes image hot objects to the local DE MinIO bound on the host.
+      # Kept for host-local integrations; media hot storage uses the shared Docker
+      # network endpoint below so MinIO does not need public or bridge-host ports.
       - 'host.docker.internal:host-gateway'
     environment:
       # MissAV is behind Cloudflare; route fetches through FlareSolverr (real Chrome).
@@ -26,7 +27,7 @@ services:
       # Image rehosting. Hot writes go to DE MinIO; archive copies go to JP Garage.
       # Values come from this project's .env on the target host so compose updates
       # do not carry secrets.
-      OSS_HOT_ENDPOINT: ${OSS_HOT_ENDPOINT:-http://host.docker.internal:3900}
+      OSS_HOT_ENDPOINT: ${OSS_HOT_ENDPOINT:-http://dokilove-media-hot-production:9000}
       OSS_HOT_KEY_ID: ${OSS_HOT_KEY_ID}
       OSS_HOT_SECRET: ${OSS_HOT_SECRET}
       OSS_HOT_BUCKET: ${OSS_HOT_BUCKET:-media}
