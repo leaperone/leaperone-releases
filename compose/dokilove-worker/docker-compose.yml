@@ -42,7 +42,8 @@ services:
       OSS_REHOST_TIMEOUT_MS: ${OSS_REHOST_TIMEOUT_MS:-90000}
       OSS_PUT_TIMEOUT_MS: ${OSS_PUT_TIMEOUT_MS:-30000}
       OSS_SOURCE_ALLOWLIST: ${OSS_SOURCE_ALLOWLIST}
-      MEDIA_ARCHIVE_CRON: ${MEDIA_ARCHIVE_CRON:-10 */2 * * *}
+      # Empty MEDIA_ARCHIVE_CRON disables JP archive catch-up during DE hot backfill.
+      MEDIA_ARCHIVE_CRON: ${MEDIA_ARCHIVE_CRON-10 */2 * * *}
       MEDIA_ARCHIVE_LIMIT: ${MEDIA_ARCHIVE_LIMIT:-50}
       MEDIA_ARCHIVE_CONCURRENCY: ${MEDIA_ARCHIVE_CONCURRENCY:-1}
       # Legacy JP_OSS_* variables stay for compatibility with older images and scripts.
