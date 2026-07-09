@@ -27,6 +27,7 @@ services:
       # Image rehosting. Hot writes go to DE MinIO; archive copies go to JP Garage.
       # Values come from this project's .env on the target host so compose updates
       # do not carry secrets.
+      OSS_REQUIRE_HOT_STORAGE: ${OSS_REQUIRE_HOT_STORAGE:-true}
       OSS_HOT_ENDPOINT: ${OSS_HOT_ENDPOINT:-http://dokilove-media-hot-production:9000}
       OSS_HOT_KEY_ID: ${OSS_HOT_KEY_ID}
       OSS_HOT_SECRET: ${OSS_HOT_SECRET}
