@@ -1,0 +1,262 @@
+name: Deploy LEAPERone frontend (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      component:
+        required: true
+        type: string
+        description: "Frontend component: www or dashboard"
+      project:
+        required: true
+        type: string
+        description: "Deployment project directory"
+      sentry_project:
+        required: true
+        type: string
+        description: "Component-specific Sentry project slug"
+      sentry_dsn:
+        required: true
+        type: string
+        description: "Component-specific public Sentry DSN"
+      requested_ref:
+        required: false
+        type: string
+        default: main
+        description: "LEAPERone main branch or component release tag"
+      requested_source_sha:
+        required: false
+        type: string
+        default: ""
+        description: "Optional full SHA which must match requested_ref"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+      image_ref: ${{ steps.publish.outputs.image_ref }}
+      image_digest: ${{ steps.publish.outputs.image_digest }}
+    steps:
+      - name: Validate deploy request
+        id: request
+        env:
+          COMPONENT: ${{ inputs.component }}
+          PROJECT: ${{ inputs.project }}
+          SENTRY_PROJECT: ${{ inputs.sentry_project }}
+          REQUESTED_REF: ${{ inputs.requested_ref }}
+        run: |
+          set -euo pipefail
+
+          case "$COMPONENT:$PROJECT:$SENTRY_PROJECT" in
+            www:leaperone-www:leaperone-www|dashboard:leaperone-dashboard:leaperone-dashboard)
+              ;;
+            *)
+              echo "ERROR: unsupported frontend/project/Sentry tuple: $COMPONENT:$PROJECT:$SENTRY_PROJECT" >&2
+              exit 1
+              ;;
+          esac
+
+          case "$REQUESTED_REF" in
+            main|refs/heads/main)
+              RESOLVED_REF="$REQUESTED_REF"
+              ;;
+            refs/tags/*)
+              TAG="${REQUESTED_REF#refs/tags/}"
+              if ! [[ "$TAG" =~ ^${COMPONENT}-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+                echo "ERROR: expected a ${COMPONENT}-vX.Y.Z release tag, got: $REQUESTED_REF" >&2
+                exit 1
+              fi
+              RESOLVED_REF="$REQUESTED_REF"
+              ;;
+            *)
+              if ! [[ "$REQUESTED_REF" =~ ^${COMPONENT}-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+                echo "ERROR: frontend deploy accepts only main or ${COMPONENT}-vX.Y.Z tags, got: $REQUESTED_REF" >&2
+                exit 1
+              fi
+              RESOLVED_REF="$REQUESTED_REF"
+              ;;
+          esac
+
+          echo "ref=$RESOLVED_REF" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout LEAPERone source
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/LEAPERone
+          ref: ${{ steps.request.outputs.ref }}
+
+      - name: Validate checked out source
+        id: source
+        env:
+          COMPONENT: ${{ inputs.component }}
+          REQUESTED_SOURCE_SHA: ${{ inputs.requested_source_sha }}
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+
+          if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: checkout did not resolve to a full Git SHA" >&2
+            exit 1
+          fi
+          if [ -n "$REQUESTED_SOURCE_SHA" ]; then
+            if ! [[ "$REQUESTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "ERROR: source_sha must be a full lowercase Git SHA" >&2
+              exit 1
+            fi
+            if [ "$REQUESTED_SOURCE_SHA" != "$SOURCE_SHA" ]; then
+              echo "ERROR: requested source_sha does not match the checked out ref" >&2
+              exit 1
+            fi
+          fi
+
+          test -f "apps/${COMPONENT}/docker/Dockerfile" || {
+            echo "ERROR: apps/${COMPONENT}/docker/Dockerfile is missing from $SOURCE_SHA" >&2
+            exit 1
+          }
+          grep -q '/api/health' "apps/${COMPONENT}/docker/Dockerfile" || {
+            echo "ERROR: ${COMPONENT} Dockerfile has no /api/health HEALTHCHECK" >&2
+            exit 1
+          }
+          test -f "apps/${COMPONENT}/app/api/health/route.ts" || {
+            echo "ERROR: ${COMPONENT} /api/health route is missing from $SOURCE_SHA" >&2
+            exit 1
+          }
+          if [ "$COMPONENT" = "dashboard" ]; then
+            test -f apps/dashboard/app/api/ready/route.ts || {
+              echo "ERROR: Dashboard /api/ready route is missing from $SOURCE_SHA" >&2
+              exit 1
+            }
+          fi
+          grep -q 'id=next_server_actions_encryption_key' "apps/${COMPONENT}/docker/Dockerfile" || {
+            echo "ERROR: ${COMPONENT} Dockerfile is missing the Server Actions BuildKit secret mount" >&2
+            exit 1
+          }
+          grep -q "^[[:space:]]*leaperone-${COMPONENT}:" docker/docker-compose-build.yml || {
+            echo "ERROR: docker/docker-compose-build.yml has no leaperone-${COMPONENT} service" >&2
+            exit 1
+          }
+          grep -q 'NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE' docker/docker-compose-build.yml || {
+            echo "ERROR: build compose is missing the Server Actions secret file contract" >&2
+            exit 1
+          }
+
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Validate Sentry source map credentials
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: ${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
+          SENTRY_DSN: ${{ inputs.sentry_dsn }}
+        run: |
+          test -n "$SENTRY_AUTH_TOKEN" || {
+            echo "ERROR: SENTRY_AUTH_TOKEN is required for frontend builds" >&2
+            exit 1
+          }
+          test -n "$SENTRY_DSN" || {
+            echo "ERROR: the component-specific Sentry DSN is required" >&2
+            exit 1
+          }
+          if ! [[ "$SENTRY_DSN" =~ ^https://[A-Za-z0-9._-]+@sentry\.leaperone\.cn/[0-9]+$ ]]; then
+            echo "ERROR: Sentry DSN must be a public-key DSN on sentry.leaperone.cn" >&2
+            exit 1
+          fi
+          test -n "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY" || {
+            echo "ERROR: NEXT_SERVER_ACTIONS_ENCRYPTION_KEY is required for stable Server Actions" >&2
+            exit 1
+          }
+
+      - name: Setup Docker Compose
+        uses: KengoTODA/actions-setup-docker-compose@v1
+        with:
+          version: "2.36.2"
+
+      - name: Prepare frontend BuildKit secrets
+        id: sentry-secret
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: ${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          SECRET_FILE="$RUNNER_TEMP/leaperone-${{ inputs.component }}-sentry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          ACTIONS_SECRET_FILE="$RUNNER_TEMP/leaperone-${{ inputs.component }}-server-actions-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "path=$SECRET_FILE" >> "$GITHUB_OUTPUT"
+          echo "actions_path=$ACTIONS_SECRET_FILE" >> "$GITHUB_OUTPUT"
+          printf '%s' "$SENTRY_AUTH_TOKEN" > "$SECRET_FILE"
+          printf '%s' "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY" > "$ACTIONS_SECRET_FILE"
+
+      - name: Build selected frontend image
+        env:
+          COMPONENT: ${{ inputs.component }}
+          API_URL: https://api.leaper.one
+          NEXT_PUBLIC_DASHBOARD_URL: https://dashboard.leaper.one
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.LEAPERONE_TURNSTILE_SITE_KEY }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.LEAPERONE_POSTHOG_KEY }}
+          NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.LEAPERONE_POSTHOG_HOST }}
+          NEXT_PUBLIC_GOOGLE_ANALYTICS_ID: ${{ vars.LEAPERONE_GOOGLE_ANALYTICS_ID }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ inputs.sentry_dsn }}
+          NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE: ${{ vars.LEAPERONE_SENTRY_TRACES_SAMPLE_RATE || '0.1' }}
+          SENTRY_ORG: leaperone
+          SENTRY_URL: https://sentry.leaperone.cn
+          WWW_SENTRY_PROJECT: ${{ inputs.component == 'www' && inputs.sentry_project || '' }}
+          WWW_SENTRY_RELEASE: ${{ inputs.component == 'www' && format('leaperone-www@{0}', steps.source.outputs.sha) || '' }}
+          DASHBOARD_SENTRY_PROJECT: ${{ inputs.component == 'dashboard' && inputs.sentry_project || '' }}
+          DASHBOARD_SENTRY_RELEASE: ${{ inputs.component == 'dashboard' && format('leaperone-dashboard@{0}', steps.source.outputs.sha) || '' }}
+          SENTRY_AUTH_TOKEN_FILE: ${{ steps.sentry-secret.outputs.path }}
+          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.sentry-secret.outputs.actions_path }}
+        run: docker compose -f docker/docker-compose-build.yml build "leaperone-${COMPONENT}"
+
+      - name: Remove frontend BuildKit secrets
+        if: always() && (steps.sentry-secret.outputs.path != '' || steps.sentry-secret.outputs.actions_path != '')
+        env:
+          SENTRY_AUTH_TOKEN_FILE: ${{ steps.sentry-secret.outputs.path }}
+          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.sentry-secret.outputs.actions_path }}
+        run: rm -f "$SENTRY_AUTH_TOKEN_FILE" "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE"
+
+      - name: Login to Aliyun Docker Registry
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-hongkong.aliyuncs.com
+          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+
+      - name: Push immutable frontend image
+        id: publish
+        env:
+          COMPONENT: ${{ inputs.component }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          REGISTRY_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone"
+          LOCAL_IMAGE="${REGISTRY_IMAGE}:${COMPONENT}-latest"
+          IMMUTABLE_IMAGE="${REGISTRY_IMAGE}:${COMPONENT}-${SOURCE_SHA}"
+
+          if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: refusing to publish a mutable or malformed image tag" >&2
+            exit 1
+          fi
+          docker image inspect "$LOCAL_IMAGE" >/dev/null
+          docker tag "$LOCAL_IMAGE" "$IMMUTABLE_IMAGE"
+          PUSH_OUTPUT="$(docker push "$IMMUTABLE_IMAGE" 2>&1)"
+          printf '%s\n' "$PUSH_OUTPUT"
+          IMAGE_DIGEST="$(printf '%s\n' "$PUSH_OUTPUT" | sed -nE 's/^.*digest: (sha256:[0-9a-f]{64}).*$/\1/p' | tail -n 1)"
+          if ! [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "ERROR: registry push did not return a valid manifest digest" >&2
+            exit 1
+          fi
+
+          echo "image_ref=$IMMUTABLE_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "image_digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+
+  deploy-de:
+    needs: build
+    uses: ./.github/workflows/deploy-de.yml
+    with:
+      project: ${{ inputs.project }}
+      env: production
+      image_source_sha: ${{ needs.build.outputs.source_sha }}
+      image_ref: ${{ needs.build.outputs.image_ref }}
+      image_digest: ${{ needs.build.outputs.image_digest }}
+    secrets: inherit

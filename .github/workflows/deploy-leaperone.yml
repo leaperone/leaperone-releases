@@ -117,15 +117,28 @@ jobs:
               exit 1
             fi
           fi
+          grep -q 'id=next_server_actions_encryption_key' apps/web/docker/Dockerfile || {
+            echo "ERROR: Web Dockerfile is missing the Server Actions BuildKit secret mount" >&2
+            exit 1
+          }
+          grep -q 'NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE' docker/docker-compose-build.yml || {
+            echo "ERROR: build compose is missing the Server Actions secret file contract" >&2
+            exit 1
+          }
           echo "release=$ACTUAL_SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Validate Sentry source map env
         if: steps.set-ref.outputs.is_deployable == 'true'
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: ${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
         run: |
           test -n "$SENTRY_AUTH_TOKEN" || {
             echo "SENTRY_AUTH_TOKEN is required for deployable web builds"
+            exit 1
+          }
+          test -n "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY" || {
+            echo "NEXT_SERVER_ACTIONS_ENCRYPTION_KEY is required for stable Server Actions"
             exit 1
           }
 
@@ -134,8 +147,26 @@ jobs:
         with:
           version: '2.14.2'
 
+      - name: Prepare Web BuildKit secrets
+        id: sentry-secret
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: ${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          SECRET_FILE="$RUNNER_TEMP/leaperone-web-api-sentry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          ACTIONS_SECRET_FILE="$RUNNER_TEMP/leaperone-web-server-actions-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "path=$SECRET_FILE" >> "$GITHUB_OUTPUT"
+          echo "actions_path=$ACTIONS_SECRET_FILE" >> "$GITHUB_OUTPUT"
+          printf '%s' "$SENTRY_AUTH_TOKEN" > "$SECRET_FILE"
+          printf '%s' "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY" > "$ACTIONS_SECRET_FILE"
+
       - name: Build Docker images
-        run: docker compose -f ./docker/docker-compose-build.yml build
+        # Keep the legacy Web/API release isolated from the split frontends.
+        # WWW and Dashboard have independent workflows, tags, and Sentry releases.
+        run: docker compose -f ./docker/docker-compose-build.yml build leaperone-web leaperone-api
         env:
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.LEAPERONE_POSTHOG_KEY }}
           NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.LEAPERONE_POSTHOG_HOST }}
@@ -144,7 +175,15 @@ jobs:
           SENTRY_PROJECT: leaperone-web
           SENTRY_URL: https://sentry.leaperone.cn
           SENTRY_RELEASE: ${{ steps.sentry.outputs.release }}
-          SENTRY_AUTH_TOKEN: ${{ steps.set-ref.outputs.is_deployable == 'true' && secrets.SENTRY_AUTH_TOKEN || '' }}
+          SENTRY_AUTH_TOKEN_FILE: ${{ steps.sentry-secret.outputs.path || '/dev/null' }}
+          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.sentry-secret.outputs.actions_path || '/dev/null' }}
+
+      - name: Remove Web BuildKit secrets
+        if: always() && (steps.sentry-secret.outputs.path != '' || steps.sentry-secret.outputs.actions_path != '')
+        env:
+          SENTRY_AUTH_TOKEN_FILE: ${{ steps.sentry-secret.outputs.path }}
+          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.sentry-secret.outputs.actions_path }}
+        run: rm -f "$SENTRY_AUTH_TOKEN_FILE" "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE"
 
       - name: Login to Aliyun Docker Registry
         if: steps.set-ref.outputs.is_deployable == 'true'

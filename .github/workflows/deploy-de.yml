@@ -20,7 +20,17 @@ on:
         required: false
         type: string
         default: ""
-        description: "Optional full source SHA used for immutable web/api image tags"
+        description: "Optional full source SHA used for project-specific immutable image tags"
+      image_ref:
+        required: false
+        type: string
+        default: ""
+        description: "Expected immutable registry image reference for deployment verification"
+      image_digest:
+        required: false
+        type: string
+        default: ""
+        description: "Expected registry manifest digest for deployment verification"
       runner:
         required: false
         type: string
@@ -63,25 +73,95 @@ jobs:
         env:
           DEPLOY_COMPONENTS: ${{ inputs.components }}
           IMAGE_SOURCE_SHA: ${{ inputs.image_source_sha }}
+          IMAGE_REF: ${{ inputs.image_ref }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          RELEASES_SHA: ${{ github.sha }}
         with:
           host: ${{ secrets.DE_APP_HOST }}
           username: ${{ secrets.DE_APP_USERNAME }}
           key: ${{ secrets.DE_APP_SSH_KEY }}
           port: ${{ secrets.DE_APP_PORT }}
           command_timeout: 20m
-          envs: DEPLOY_COMPONENTS,IMAGE_SOURCE_SHA
+          envs: DEPLOY_COMPONENTS,IMAGE_SOURCE_SHA,IMAGE_REF,IMAGE_DIGEST,RELEASES_SHA
           script: |
             set -euo pipefail
             TOOL_DIR="/opt/apps/${{ inputs.project }}/${{ inputs.env }}/.release-tools/${{ github.run_id }}-${{ github.run_attempt }}"
             trap 'rm -rf "$TOOL_DIR"' EXIT
+            IMAGE_SOURCE_SHA="${IMAGE_SOURCE_SHA:-}"
+            IMAGE_REF="${IMAGE_REF:-}"
+            IMAGE_DIGEST="${IMAGE_DIGEST:-}"
+            RELEASES_SHA="${RELEASES_SHA:-}"
+            COMPONENT=""
+            CONTAINER_NAME=""
 
-            if [ "${{ inputs.project }}" = "leaperone" ]; then
-              if [ "${#IMAGE_SOURCE_SHA}" -ne 40 ] || [[ "$IMAGE_SOURCE_SHA" == *[!0-9a-f]* ]]; then
-                echo "ERROR: LEAPERone deploy requires a full lowercase Git source SHA" >&2
+            case "${{ inputs.project }}" in
+              leaperone|leaperone-www|leaperone-dashboard)
+                if [ "${#IMAGE_SOURCE_SHA}" -ne 40 ] || [[ "$IMAGE_SOURCE_SHA" == *[!0-9a-f]* ]]; then
+                  echo "ERROR: ${{ inputs.project }} deploy requires a full lowercase Git source SHA" >&2
+                  exit 1
+                fi
+                ;;
+            esac
+
+            case "${{ inputs.project }}" in
+              leaperone)
+                export WEB_IMAGE_TAG="web-${IMAGE_SOURCE_SHA}"
+                export API_IMAGE_TAG="api-${IMAGE_SOURCE_SHA}"
+                ;;
+              leaperone-www)
+                COMPONENT="www"
+                CONTAINER_NAME="leaperone-www-production"
+                export WWW_IMAGE_TAG="www-${IMAGE_SOURCE_SHA}"
+                export WWW_IMAGE_DIGEST="$IMAGE_DIGEST"
+                ;;
+              leaperone-dashboard)
+                COMPONENT="dashboard"
+                CONTAINER_NAME="leaperone-dashboard-production"
+                export DASHBOARD_IMAGE_TAG="dashboard-${IMAGE_SOURCE_SHA}"
+                export DASHBOARD_IMAGE_DIGEST="$IMAGE_DIGEST"
+                ;;
+            esac
+
+            if [ -n "$COMPONENT" ]; then
+              EXPECTED_IMAGE_REF="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:${COMPONENT}-${IMAGE_SOURCE_SHA}"
+              [ "$IMAGE_REF" = "$EXPECTED_IMAGE_REF" ] || {
+                echo "ERROR: unexpected immutable image ref: $IMAGE_REF" >&2
                 exit 1
-              fi
-              export WEB_IMAGE_TAG="web-${IMAGE_SOURCE_SHA}"
-              export API_IMAGE_TAG="api-${IMAGE_SOURCE_SHA}"
+              }
+              [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+                echo "ERROR: invalid expected image digest" >&2
+                exit 1
+              }
+              [[ "$RELEASES_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+                echo "ERROR: invalid releases repository SHA" >&2
+                exit 1
+              }
             fi
 
             bash "$TOOL_DIR/deploy.sh" "${{ inputs.project }}" "${{ inputs.env }}"
+
+            [ -n "$COMPONENT" ] || exit 0
+
+            IMAGE_REPOSITORY="${IMAGE_REF%:*}"
+            EXPECTED_REPO_DIGEST="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+            CONTAINER_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$CONTAINER_NAME")"
+            if ! docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$CONTAINER_IMAGE_ID" \
+              | grep -Fxq "$EXPECTED_REPO_DIGEST"; then
+              echo "ERROR: $CONTAINER_NAME is not running expected RepoDigest $EXPECTED_REPO_DIGEST" >&2
+              exit 1
+            fi
+
+            RECORD_DIR="/var/lib/leaperone/deployments"
+            RECORD_FILE="${RECORD_DIR}/frontend-deployments.jsonl"
+            DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            exec 8>/run/lock/leaperone-deployment-record.lock
+            flock -x 8
+            install -d -m 0700 "$RECORD_DIR"
+            if [ ! -f "$RECORD_FILE" ]; then
+              install -m 0600 /dev/null "$RECORD_FILE"
+            fi
+            chmod 0600 "$RECORD_FILE"
+            printf '{"component":"%s","source_sha":"%s","releases_sha":"%s","image_ref":"%s","image_digest":"%s","deployed_at":"%s","migration":"none"}\n' \
+              "$COMPONENT" "$IMAGE_SOURCE_SHA" "$RELEASES_SHA" "$IMAGE_REF" "$IMAGE_DIGEST" "$DEPLOYED_AT" \
+              >> "$RECORD_FILE"
+            echo "Deployment evidence appended to $RECORD_FILE"
