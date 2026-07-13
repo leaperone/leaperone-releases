@@ -1,0 +1,18 @@
+name: leaperone-www-${DEPLOY_ENV:-production}
+
+# Root .env is compose-only. Runtime variables belong in .env.www.
+services:
+  www:
+    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/leaperone:${WWW_IMAGE_TAG:?WWW_IMAGE_TAG must be an immutable www source-SHA tag}@${WWW_IMAGE_DIGEST:?WWW_IMAGE_DIGEST must be the expected registry manifest digest}
+    container_name: leaperone-www-${DEPLOY_ENV:-production}
+    env_file:
+      - .env.www
+    ports:
+      - "127.0.0.1:${WWW_PORT:-9820}:3000"
+    networks:
+      - leaperone-prod
+    restart: unless-stopped
+
+networks:
+  leaperone-prod:
+    external: true

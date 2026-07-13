@@ -133,7 +133,9 @@ Compose requirements:
   runtime variables; do not commit any of these files.
 - Use `postgres` network alias for `DATABASE_URL`.
 - Set API runtime role flags explicitly.
-- Set `INSTALL_NGINX_CONF=true` in the server `.env` only after TLS certs exist under `/etc/nginx/ssl/leaper.one`.
+- The legacy Web/API nginx installer is retired. Split frontend routing is
+  managed by `ops/leaperone-frontend/RUNBOOK.md` with
+  `NGINX_ROUTING_MODE=off|candidate|cutover` after all required TLS SANs exist.
 
 ### 4.2 Update `deploy-leaperone.yml`
 

@@ -38,6 +38,18 @@ fi
 
 cd "$APP_DIR"
 
+# Project-specific preflight runs before any image pull or container change.
+# If present it must be executable; silently skipping a mode-drifted safety
+# check would make the deployment less safe than the repository declares.
+if [ -f "$APP_DIR/preflight.sh" ]; then
+  if [ ! -x "$APP_DIR/preflight.sh" ]; then
+    echo "ERROR: $APP_DIR/preflight.sh exists but is not executable" >&2
+    exit 1
+  fi
+  echo "==> Running preflight for ${PROJECT}/${ENV}..."
+  "$APP_DIR/preflight.sh"
+fi
+
 # ── 蓝绿 opt-in ─────────────────────────────────────────────────────────────
 # 某个 project/env 若随 compose 一起 scp 来一份可执行的 deploy-bluegreen.sh，则把部署
 # 完全交给它（拉空闲色 → 健康探测 → 原子切 nginx upstream → 停旧色，零停机）。
