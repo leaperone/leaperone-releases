@@ -1,6 +1,6 @@
 #!/bin/bash
-# 通用部署脚本（PVE LXC 200 上的 /opt/apps/bin/deploy.sh；源在 leaperone-releases/scripts/deploy.sh）。
-# 由 CI（deploy-pve.yml 的 ssh-action，以 root 身份）调用：deploy.sh <project> <env>
+# 通用部署脚本，源在 leaperone-releases/scripts/deploy.sh。
+# CI 必须同步当前 checkout 中的脚本后再调用：deploy.sh <project> <env>
 set -euo pipefail
 
 PROJECT="${1:?Usage: deploy.sh <project> <env>}"
@@ -27,6 +27,15 @@ if [ ! -f "$APP_DIR/.env" ]; then
   exit 1
 fi
 
+if [ "$PROJECT" = "leaperone" ]; then
+  for service_env in .env.web .env.api; do
+    if [ ! -f "$APP_DIR/$service_env" ]; then
+      echo "ERROR: ${APP_DIR}/${service_env} not found; LEAPERone service env files must be split before deploy" >&2
+      exit 1
+    fi
+  done
+fi
+
 cd "$APP_DIR"
 
 # ── 蓝绿 opt-in ─────────────────────────────────────────────────────────────
@@ -45,13 +54,11 @@ if [ -f "$APP_DIR/deploy-bluegreen.sh" ]; then
 fi
 
 echo "==> Pulling images for ${PROJECT}/${ENV}..."
+docker compose config --quiet
 docker compose pull
 
-echo "==> Stopping old containers..."
-docker compose down --remove-orphans
-
-echo "==> Starting services..."
-docker compose up -d
+echo "==> Starting services and waiting for health checks..."
+docker compose up -d --remove-orphans --wait --wait-timeout 180
 
 if [ -d "$APP_DIR/scripts" ]; then
   echo "==> Running post-deploy scripts..."
@@ -62,9 +69,6 @@ if [ -d "$APP_DIR/scripts" ]; then
     fi
   done
 fi
-
-echo "==> Cleaning up old images..."
-docker image prune -f
 
 echo "==> Deploy ${PROJECT}/${ENV} complete"
 docker compose ps
