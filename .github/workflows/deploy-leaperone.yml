@@ -1,10 +1,16 @@
 name: Deploy LEAPERone
 run-name: >-
-  🚀 Deploy LEAPERone · ${{ github.event.client_payload.env || inputs.env || 'production' }} · ${{ github.event.client_payload.message || inputs.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || inputs.env || 'production' }}]
+  🚀 Deploy LEAPERone · ${{ github.event.client_payload.env || 'production' }} · ${{ github.event.client_payload.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || 'production' }}]
 
 on:
   repository_dispatch:
     types: [deploy-leaperone]
+
+concurrency:
+  # This workflow always targets the same production Web/API pair, regardless
+  # of optional dispatch metadata. Serialize every run against that target.
+  group: deploy-leaperone-production
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -13,6 +19,7 @@ jobs:
       pr_number: ${{ steps.set-ref.outputs.pr_number }}
       is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
       components: ${{ steps.set-ref.outputs.components }}
+      source_sha: ${{ steps.sentry.outputs.release }}
 
     steps:
       - name: Validate and set ref
@@ -93,7 +100,24 @@ jobs:
 
       - name: Set Sentry release
         id: sentry
-        run: echo "release=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+        env:
+          REQUESTED_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SOURCE_SHA="$(git rev-parse HEAD)"
+          if [ -n "$REQUESTED_SOURCE_SHA" ]; then
+            if ! [[ "$REQUESTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "ERROR: source_sha must be a full lowercase Git SHA" >&2
+              exit 1
+            fi
+            if [ "$REQUESTED_SOURCE_SHA" != "$ACTUAL_SOURCE_SHA" ]; then
+              echo "ERROR: requested source_sha does not match the checked out ref" >&2
+              echo "requested=$REQUESTED_SOURCE_SHA" >&2
+              echo "actual=$ACTUAL_SOURCE_SHA" >&2
+              exit 1
+            fi
+          fi
+          echo "release=$ACTUAL_SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Validate Sentry source map env
         if: steps.set-ref.outputs.is_deployable == 'true'
@@ -130,11 +154,27 @@ jobs:
           username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
           password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
 
-      - name: Push Docker images
+      - name: Push immutable and latest Docker images
         if: steps.set-ref.outputs.is_deployable == 'true'
         run: |
-          docker push registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:web-latest
-          docker push registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:api-latest
+          set -euo pipefail
+          SOURCE_SHA="${{ steps.sentry.outputs.release }}"
+          REGISTRY_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone"
+
+          if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: expected a full Git source SHA, got: $SOURCE_SHA" >&2
+            exit 1
+          fi
+
+          docker tag "${REGISTRY_IMAGE}:web-latest" "${REGISTRY_IMAGE}:web-${SOURCE_SHA}"
+          docker tag "${REGISTRY_IMAGE}:api-latest" "${REGISTRY_IMAGE}:api-${SOURCE_SHA}"
+
+          # Immutable tags are the deployment source of truth. Keep latest for
+          # humans and legacy consumers, but never deploy from it here.
+          docker push "${REGISTRY_IMAGE}:web-${SOURCE_SHA}"
+          docker push "${REGISTRY_IMAGE}:api-${SOURCE_SHA}"
+          docker push "${REGISTRY_IMAGE}:web-latest"
+          docker push "${REGISTRY_IMAGE}:api-latest"
 
       - name: Setup Node.js
         if: steps.set-ref.outputs.is_deployable == 'true'
@@ -190,4 +230,5 @@ jobs:
     with:
       project: leaperone
       env: production
+      image_source_sha: ${{ needs.build.outputs.source_sha }}
     secrets: inherit

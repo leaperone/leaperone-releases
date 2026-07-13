@@ -126,10 +126,11 @@ Recommended ports, after verifying they are free on DE:
 Compose requirements:
 
 - Use images:
-  - `registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:web-latest`
-  - `registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:api-latest`
+  - `registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:web-<source-sha>`
+  - `registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:api-<source-sha>`
 - Attach both services to external network `leaperone-prod`.
-- Use `.env` on the server; do not commit secrets.
+- Keep root `.env` compose-only and use `.env.web` / `.env.api` for service
+  runtime variables; do not commit any of these files.
 - Use `postgres` network alias for `DATABASE_URL`.
 - Set API runtime role flags explicitly.
 - Set `INSTALL_NGINX_CONF=true` in the server `.env` only after TLS certs exist under `/etc/nginx/ssl/leaper.one`.
@@ -145,9 +146,12 @@ Current behavior:
 Target behavior:
 
 1. Continue checking out `leaperone/LEAPERone`.
-2. Continue building and pushing `web-latest` and `api-latest`.
+2. Build and push immutable `web-<source-sha>` / `api-<source-sha>` tags;
+   optionally keep `web-latest` / `api-latest` updated for legacy consumers.
 3. Run DB migration against DE, not PVE.
-4. Deploy `compose/leaperone` to DE through the existing reusable `deploy-de.yml`.
+4. Deploy `compose/leaperone` to DE through the existing reusable
+   `deploy-de.yml`, passing the source SHA and running the deployment script
+   synchronized from that workflow checkout.
 
 Migration options:
 
