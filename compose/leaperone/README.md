@@ -16,6 +16,16 @@ The workflow supplies `WEB_IMAGE_TAG=web-<source-sha>` and
 `API_IMAGE_TAG=api-<source-sha>` to Docker Compose for each deployment, so the
 running containers never depend on a mutable `latest` tag.
 
+Alipay certificate mode also requires the server-only `alipay-cert/` directory
+next to the Compose file. It is mounted read-only into both services at
+`/app/alipay-cert`; Web uses all three certificates to create payment requests,
+while API uses the Alipay public certificate to verify callbacks. The directory
+must contain:
+
+- `appCertPublicKey_<app-id>.crt`
+- `alipayCertPublicKey_RSA2.crt`
+- `alipayRootCert.crt`
+
 ## One-time migration from the legacy shared `.env`
 
 This compose change deliberately fails closed until `.env.web` and `.env.api`
