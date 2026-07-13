@@ -1,11 +1,13 @@
 name: leaperone-${DEPLOY_ENV:-production}
 
+# Docker Compose reads root .env only for interpolation. Application runtime
+# variables and secrets belong in the service-specific env files below.
 services:
   web:
     image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/leaperone:${WEB_IMAGE_TAG:-web-latest}
     container_name: leaperone-web-${DEPLOY_ENV:-production}
     env_file:
-      - .env
+      - .env.web
     ports:
       - "127.0.0.1:${WEB_PORT:-9800}:3000"
     networks:
@@ -16,7 +18,7 @@ services:
     image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/leaperone:${API_IMAGE_TAG:-api-latest}
     container_name: leaperone-api-${DEPLOY_ENV:-production}
     env_file:
-      - .env
+      - .env.api
     environment:
       PORT: 9000
       DENO_ENV: production

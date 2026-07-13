@@ -16,6 +16,11 @@ on:
         type: string
         default: ""
         description: "Optional comma-separated component intent for component-aware deploy scripts"
+      image_source_sha:
+        required: false
+        type: string
+        default: ""
+        description: "Optional full source SHA used for immutable web/api image tags"
       runner:
         required: false
         type: string
@@ -41,15 +46,42 @@ jobs:
           strip_components: 2
           overwrite: true
 
+      - name: Sync repository deployment script to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DE_APP_HOST }}
+          username: ${{ secrets.DE_APP_USERNAME }}
+          key: ${{ secrets.DE_APP_SSH_KEY }}
+          port: ${{ secrets.DE_APP_PORT }}
+          source: "scripts/deploy.sh"
+          target: "/opt/apps/${{ inputs.project }}/${{ inputs.env }}/.release-tools/${{ github.run_id }}-${{ github.run_attempt }}"
+          strip_components: 1
+          overwrite: true
+
       - name: Deploy
         uses: appleboy/ssh-action@v1.0.0
         env:
           DEPLOY_COMPONENTS: ${{ inputs.components }}
+          IMAGE_SOURCE_SHA: ${{ inputs.image_source_sha }}
         with:
           host: ${{ secrets.DE_APP_HOST }}
           username: ${{ secrets.DE_APP_USERNAME }}
           key: ${{ secrets.DE_APP_SSH_KEY }}
           port: ${{ secrets.DE_APP_PORT }}
           command_timeout: 20m
-          envs: DEPLOY_COMPONENTS
-          script: /opt/apps/bin/deploy.sh ${{ inputs.project }} ${{ inputs.env }}
+          envs: DEPLOY_COMPONENTS,IMAGE_SOURCE_SHA
+          script: |
+            set -euo pipefail
+            TOOL_DIR="/opt/apps/${{ inputs.project }}/${{ inputs.env }}/.release-tools/${{ github.run_id }}-${{ github.run_attempt }}"
+            trap 'rm -rf "$TOOL_DIR"' EXIT
+
+            if [ "${{ inputs.project }}" = "leaperone" ]; then
+              if [ "${#IMAGE_SOURCE_SHA}" -ne 40 ] || [[ "$IMAGE_SOURCE_SHA" == *[!0-9a-f]* ]]; then
+                echo "ERROR: LEAPERone deploy requires a full lowercase Git source SHA" >&2
+                exit 1
+              fi
+              export WEB_IMAGE_TAG="web-${IMAGE_SOURCE_SHA}"
+              export API_IMAGE_TAG="api-${IMAGE_SOURCE_SHA}"
+            fi
+
+            bash "$TOOL_DIR/deploy.sh" "${{ inputs.project }}" "${{ inputs.env }}"
