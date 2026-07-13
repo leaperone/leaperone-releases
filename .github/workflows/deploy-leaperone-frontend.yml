@@ -59,7 +59,7 @@ jobs:
 
           case "$REQUESTED_REF" in
             main|refs/heads/main)
-              RESOLVED_REF="$REQUESTED_REF"
+              RESOLVED_REF="refs/heads/main"
               ;;
             refs/tags/*)
               TAG="${REQUESTED_REF#refs/tags/}"
@@ -67,7 +67,7 @@ jobs:
                 echo "ERROR: expected a ${COMPONENT}-vX.Y.Z release tag, got: $REQUESTED_REF" >&2
                 exit 1
               fi
-              RESOLVED_REF="$REQUESTED_REF"
+              RESOLVED_REF="refs/tags/$REQUESTED_REF"
               ;;
             *)
               if ! [[ "$REQUESTED_REF" =~ ^${COMPONENT}-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then

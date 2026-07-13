@@ -21,6 +21,8 @@ require_text "$FRONTEND" "grep -q 'id=next_server_actions_encryption_key'"
 require_text "$LEGACY" "grep -q 'id=next_server_actions_encryption_key'"
 require_text "$FRONTEND" 'image_digest: ${{ steps.publish.outputs.image_digest }}'
 require_text "$FRONTEND" 'image_digest: ${{ needs.build.outputs.image_digest }}'
+require_text "$FRONTEND" 'RESOLVED_REF="refs/heads/main"'
+require_text "$FRONTEND" 'RESOLVED_REF="refs/tags/$REQUESTED_REF"'
 require_text "$DEPLOY" "WWW_IMAGE_DIGEST=\"\$IMAGE_DIGEST\""
 require_text "$DEPLOY" "DASHBOARD_IMAGE_DIGEST=\"\$IMAGE_DIGEST\""
 require_text "$DEPLOY" "{{range .RepoDigests}}{{println .}}{{end}}"

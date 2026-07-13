@@ -19,9 +19,12 @@ fail() {
 assert_private_file() {
   local path="$1"
   local mode
+  local owner
   [ -f "$path" ] || fail "$path is missing"
   mode="$(stat -c '%a' "$path" 2>/dev/null || stat -f '%Lp' "$path")"
   [ "$mode" = "600" ] || fail "$path must have mode 0600 (found $mode)"
+  owner="$(stat -c '%u:%g' "$path" 2>/dev/null || stat -f '%u:%g' "$path")"
+  [ "$owner" = "0:0" ] || fail "$path must be owned by root:root (found $owner)"
 }
 
 manifest_keys() {

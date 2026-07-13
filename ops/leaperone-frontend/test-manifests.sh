@@ -21,7 +21,19 @@ cat > "$TMP/bin/ss" <<'MOCK'
 #!/bin/sh
 exit 0
 MOCK
-chmod 0755 "$TMP/bin/docker" "$TMP/bin/ss"
+cat > "$TMP/bin/stat" <<'MOCK'
+#!/bin/sh
+case "${1:-}:${2:-}" in
+  -c:%u:%g|-f:%u:%g)
+    printf '%s\n' "${MOCK_STAT_OWNER:-0:0}"
+    exit 0
+    ;;
+esac
+exec "${REAL_STAT_BIN:?}" "$@"
+MOCK
+chmod 0755 "$TMP/bin/docker" "$TMP/bin/ss" "$TMP/bin/stat"
+REAL_STAT_BIN="$(command -v stat)"
+export REAL_STAT_BIN
 
 printf 'fixture\n' > "$TMP/certs/app.crt"
 printf 'fixture\n' > "$TMP/certs/alipay.crt"
@@ -84,6 +96,11 @@ expect_failure() {
     exit 1
   fi
 }
+
+expect_failure env PATH="$TMP/bin:$PATH" MOCK_STAT_OWNER=1000:1000 \
+  WWW_IMAGE_TAG="www-$SHA" WWW_IMAGE_DIGEST="$DIGEST" "$TMP/www/preflight.sh"
+expect_failure env PATH="$TMP/bin:$PATH" MOCK_STAT_OWNER=1000:1000 \
+  DASHBOARD_IMAGE_TAG="dashboard-$SHA" DASHBOARD_IMAGE_DIGEST="$DIGEST" "$TMP/dashboard/preflight.sh"
 
 cp "$TMP/www/.env.www" "$TMP/www/.env.www.valid"
 printf 'DATABASE_URL=forbidden\n' >> "$TMP/www/.env.www"
