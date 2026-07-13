@@ -8,6 +8,13 @@ services:
     container_name: leaperone-web-${DEPLOY_ENV:-production}
     env_file:
       - .env.web
+    volumes:
+      - type: bind
+        source: ./alipay-cert
+        target: /app/alipay-cert
+        read_only: true
+        bind:
+          create_host_path: false
     ports:
       - "127.0.0.1:${WEB_PORT:-9800}:3000"
     networks:
@@ -19,6 +26,13 @@ services:
     container_name: leaperone-api-${DEPLOY_ENV:-production}
     env_file:
       - .env.api
+    volumes:
+      - type: bind
+        source: ./alipay-cert
+        target: /app/alipay-cert
+        read_only: true
+        bind:
+          create_host_path: false
     environment:
       PORT: 9000
       DENO_ENV: production
