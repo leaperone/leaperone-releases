@@ -42,7 +42,6 @@ printf 'fixture\n' > "$TMP/certs/root.crt"
 cat > "$TMP/www/.env" <<'ENV'
 DEPLOY_ENV=production
 WWW_PORT=9820
-NGINX_ROUTING_MODE=off
 ENV
 cat > "$TMP/www/.env.www" <<'ENV'
 API_URL="https://api.leaper.one"

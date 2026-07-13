@@ -122,11 +122,6 @@ WWW_PORT="${WWW_PORT:-9820}"
 [[ "$WWW_PORT" =~ ^[0-9]+$ ]] || fail "WWW_PORT must be numeric"
 [ "$WWW_PORT" = "9820" ] || fail "WWW_PORT must remain 9820 because nginx routing is pinned to it"
 
-case "${NGINX_ROUTING_MODE:-off}" in
-  off|candidate|cutover) ;;
-  *) fail "NGINX_ROUTING_MODE must be off, candidate, or cutover" ;;
-esac
-
 if ! keys="$(manifest_keys .env.www)"; then
   fail ".env.www contains malformed or duplicate assignments"
 fi
