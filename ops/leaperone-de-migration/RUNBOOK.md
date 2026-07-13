@@ -1,7 +1,8 @@
 # LEAPERone Germany Migration Runbook
 
-Status: design, not executed.
-Last updated: 2026-07-07.
+Status: historical migration plan. Frontend routing and deployment are
+superseded by `ops/leaperone-frontend/RUNBOOK.md`.
+Last updated: 2026-07-13.
 
 This runbook covers the planned LEAPERone migration:
 
@@ -134,8 +135,9 @@ Compose requirements:
 - Use `postgres` network alias for `DATABASE_URL`.
 - Set API runtime role flags explicitly.
 - The legacy Web/API nginx installer is retired. Split frontend routing is
-  managed by `ops/leaperone-frontend/RUNBOOK.md` with
-  `NGINX_ROUTING_MODE=off|candidate|cutover` after all required TLS SANs exist.
+  managed by the one-shot paired deployment in
+  `ops/leaperone-frontend/RUNBOOK.md` after all final DNS, OAuth, image, and
+  readiness prerequisites are satisfied.
 
 ### 4.2 Update `deploy-leaperone.yml`
 

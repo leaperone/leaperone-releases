@@ -39,6 +39,7 @@ jobs:
             compose/leaperone-www/preflight.sh \
             compose/leaperone-www/scripts/10-install-nginx-conf.sh \
             compose/leaperone/scripts/10-install-nginx-conf.sh \
+            ops/leaperone-frontend/cutover/cutover-nginx.sh \
             ops/leaperone-frontend/rollback-nginx.sh \
             ops/leaperone-frontend/test-manifests.sh \
             ops/leaperone-frontend/test-routing.sh \
@@ -74,6 +75,7 @@ jobs:
             .github/workflows/deploy-de.yml \
             .github/workflows/deploy-leaperone.yml \
             .github/workflows/deploy-leaperone-frontend.yml \
+            .github/workflows/deploy-leaperone-frontends.yml \
             .github/workflows/deploy-leaperone-www.yml \
             .github/workflows/deploy-leaperone-dashboard.yml \
             .github/workflows/verify-pr-leaperone-frontend.yml
@@ -86,13 +88,14 @@ jobs:
             compose/leaperone-www/preflight.sh \
             compose/leaperone-www/scripts/10-install-nginx-conf.sh \
             compose/leaperone/scripts/10-install-nginx-conf.sh \
+            ops/leaperone-frontend/cutover/cutover-nginx.sh \
             ops/leaperone-frontend/rollback-nginx.sh \
             ops/leaperone-frontend/test-manifests.sh \
             ops/leaperone-frontend/test-routing.sh \
             ops/leaperone-frontend/test-workflow-contracts.sh \
             scripts/deploy.sh
 
-      - name: Validate candidate and cutover Nginx syntax
+      - name: Validate final Nginx syntax
         run: |
           set -euo pipefail
           fixture="$RUNNER_TEMP/leaperone-nginx"
@@ -101,15 +104,63 @@ jobs:
             -keyout "$fixture/ssl/leaper.one/leaper.one.key" \
             -out "$fixture/ssl/leaper.one/fullchain.cer" \
             -subj "/CN=leaper.one" \
-            -addext "subjectAltName=DNS:leaper.one,DNS:www.leaper.one,DNS:api.leaper.one,DNS:dashboard.leaper.one,DNS:next.leaper.one" \
+            -addext "subjectAltName=DNS:leaper.one,DNS:www.leaper.one,DNS:api.leaper.one,DNS:dashboard.leaper.one" \
             >/dev/null 2>&1
           : > "$fixture/snippets/cloudflare-real-ip.conf"
-          cp compose/leaperone-www/nginx/leaperone-proxy-headers.conf \
+          cp ops/leaperone-frontend/cutover/leaperone-proxy-headers.conf \
             "$fixture/snippets/leaperone-proxy-headers.conf"
-          for mode in candidate cutover; do
-            docker run --rm \
-              -v "$PWD/compose/leaperone-www/nginx/leaperone-${mode}-local.conf:/etc/nginx/conf.d/default.conf:ro" \
-              -v "$fixture/ssl:/etc/nginx/ssl:ro" \
-              -v "$fixture/snippets:/etc/nginx/snippets:ro" \
-              nginx:1.28-alpine nginx -t
+          docker run --rm \
+            -v "$PWD/ops/leaperone-frontend/cutover/leaperone-local.conf:/etc/nginx/conf.d/default.conf:ro" \
+            -v "$fixture/ssl:/etc/nginx/ssl:ro" \
+            -v "$fixture/snippets:/etc/nginx/snippets:ro" \
+            nginx:1.28-alpine nginx -t
+
+      - name: Exercise final routing against mock upstreams
+        run: |
+          set -euo pipefail
+          fixture="$RUNNER_TEMP/leaperone-nginx-routing"
+          mkdir -p "$fixture/ssl/leaper.one" "$fixture/snippets"
+          openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
+            -keyout "$fixture/ssl/leaper.one/leaper.one.key" \
+            -out "$fixture/ssl/leaper.one/fullchain.cer" \
+            -subj "/CN=leaper.one" \
+            -addext "subjectAltName=DNS:leaper.one,DNS:www.leaper.one,DNS:api.leaper.one,DNS:dashboard.leaper.one" \
+            >/dev/null 2>&1
+          : > "$fixture/snippets/cloudflare-real-ip.conf"
+          cp ops/leaperone-frontend/cutover/leaperone-proxy-headers.conf \
+            "$fixture/snippets/leaperone-proxy-headers.conf"
+          printf '%s\n' \
+            'server { listen 127.0.0.1:9820; location / { return 200 "www:$uri"; } }' \
+            'server { listen 127.0.0.1:9821; location / { return 200 "dashboard:$uri"; } }' \
+            'server { listen 127.0.0.1:9801; location / { return 200 "api:$uri"; } }' \
+            > "$fixture/mock-upstreams.conf"
+          docker run --rm -d --name leaperone-final-routing-test \
+            -p 127.0.0.1:18443:443 \
+            -v "$PWD/ops/leaperone-frontend/cutover/leaperone-local.conf:/etc/nginx/conf.d/default.conf:ro" \
+            -v "$fixture/mock-upstreams.conf:/etc/nginx/conf.d/mock-upstreams.conf:ro" \
+            -v "$fixture/ssl:/etc/nginx/ssl:ro" \
+            -v "$fixture/snippets:/etc/nginx/snippets:ro" \
+            nginx:1.28-alpine >/dev/null
+          trap 'docker stop leaperone-final-routing-test >/dev/null 2>&1 || true' EXIT
+
+          request() {
+            local host="$1"
+            local path="$2"
+            curl --noproxy '*' --insecure --fail --silent --show-error \
+              --resolve "$host:18443:127.0.0.1" "https://${host}:18443${path}"
+          }
+          for attempt in $(seq 1 20); do
+            if request leaper.one /api/health >/dev/null 2>&1; then break; fi
+            [ "$attempt" -lt 20 ] || { docker logs leaperone-final-routing-test; exit 1; }
+            sleep 1
           done
+
+          [ "$(request leaper.one /)" = "www:/" ]
+          [ "$(request leaper.one /dashboard)" = "www:/dashboard" ]
+          [ "$(request leaper.one /api/v1/cli/docs)" = "www:/api/v1/cli/docs" ]
+          [ "$(request leaper.one /api/v1/envx/team/app)" = "www:/api/v1/envx/team/app" ]
+          [ "$(request leaper.one /api/auth/session)" = "www:/api/auth/session" ]
+          [ "$(request leaper.one /api/recharge/notify/stripe)" = "api:/webhooks/payments/stripe" ]
+          [ "$(request leaper.one /api/recharge/notify/alipay)" = "api:/webhooks/payments/alipay" ]
+          [ "$(request dashboard.leaper.one /api/ready)" = "dashboard:/api/ready" ]
+          [ "$(request api.leaper.one /health)" = "api:/health" ]

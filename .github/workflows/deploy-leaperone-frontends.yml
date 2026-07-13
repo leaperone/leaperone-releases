@@ -1,0 +1,119 @@
+name: Deploy LEAPERone frontends and cut over
+run-name: >-
+  🚀 Deploy LEAPERone frontends · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || 'required' }}]
+
+on:
+  repository_dispatch:
+    types: [deploy-leaperone-frontends]
+
+concurrency:
+  group: leaperone-frontends-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.request.outputs.source_sha }}
+      source_ref: ${{ steps.request.outputs.source_ref }}
+    steps:
+      - name: Pin one deployable source revision
+        id: request
+        env:
+          REQUESTED_REF: ${{ github.event.client_payload.ref || 'main' }}
+          SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+        run: |
+          set -euo pipefail
+          case "$REQUESTED_REF" in
+            main|refs/heads/main) SOURCE_REF="refs/heads/main" ;;
+            *)
+              echo "ERROR: paired frontend cutover currently accepts only main" >&2
+              exit 1
+              ;;
+          esac
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "ERROR: source_sha is required and must be a full lowercase Git SHA" >&2
+            exit 1
+          }
+          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+  dashboard:
+    needs: validate
+    uses: ./.github/workflows/deploy-leaperone-frontend.yml
+    with:
+      component: dashboard
+      project: leaperone-dashboard
+      sentry_project: leaperone-dashboard
+      sentry_dsn: ${{ vars.LEAPERONE_DASHBOARD_SENTRY_DSN }}
+      requested_ref: ${{ needs.validate.outputs.source_ref }}
+      requested_source_sha: ${{ needs.validate.outputs.source_sha }}
+    secrets: inherit
+
+  www:
+    needs: [validate, dashboard]
+    uses: ./.github/workflows/deploy-leaperone-frontend.yml
+    with:
+      component: www
+      project: leaperone-www
+      sentry_project: leaperone-www
+      sentry_dsn: ${{ vars.LEAPERONE_WWW_SENTRY_DSN }}
+      requested_ref: ${{ needs.validate.outputs.source_ref }}
+      requested_source_sha: ${{ needs.validate.outputs.source_sha }}
+    secrets: inherit
+
+  cutover:
+    needs: [validate, dashboard, www]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release configuration
+        uses: actions/checkout@v6
+
+      - name: Validate paired build outputs
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+          DASHBOARD_SOURCE_SHA: ${{ needs.dashboard.outputs.source_sha }}
+          WWW_SOURCE_SHA: ${{ needs.www.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [ "$DASHBOARD_SOURCE_SHA" = "$EXPECTED_SOURCE_SHA" ] || {
+            echo "ERROR: Dashboard source SHA drifted from the pinned pair" >&2
+            exit 1
+          }
+          [ "$WWW_SOURCE_SHA" = "$EXPECTED_SOURCE_SHA" ] || {
+            echo "ERROR: WWW source SHA drifted from the pinned pair" >&2
+            exit 1
+          }
+
+      - name: Sync one-shot cutover bundle
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DE_APP_HOST }}
+          username: ${{ secrets.DE_APP_USERNAME }}
+          key: ${{ secrets.DE_APP_SSH_KEY }}
+          port: ${{ secrets.DE_APP_PORT }}
+          source: "ops/leaperone-frontend/cutover/*"
+          target: "/opt/apps/leaperone-frontend-cutover/releases/${{ github.run_id }}-${{ github.run_attempt }}"
+          strip_components: 3
+          overwrite: true
+
+      - name: Cut over final routing once
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+          WWW_IMAGE_REF: ${{ needs.www.outputs.image_ref }}
+          WWW_IMAGE_DIGEST: ${{ needs.www.outputs.image_digest }}
+          DASHBOARD_IMAGE_REF: ${{ needs.dashboard.outputs.image_ref }}
+          DASHBOARD_IMAGE_DIGEST: ${{ needs.dashboard.outputs.image_digest }}
+          RELEASES_SHA: ${{ github.sha }}
+        with:
+          host: ${{ secrets.DE_APP_HOST }}
+          username: ${{ secrets.DE_APP_USERNAME }}
+          key: ${{ secrets.DE_APP_SSH_KEY }}
+          port: ${{ secrets.DE_APP_PORT }}
+          command_timeout: 10m
+          envs: SOURCE_SHA,WWW_IMAGE_REF,WWW_IMAGE_DIGEST,DASHBOARD_IMAGE_REF,DASHBOARD_IMAGE_DIGEST,RELEASES_SHA
+          script: |
+            set -euo pipefail
+            CUTOVER_DIR="/opt/apps/leaperone-frontend-cutover/releases/${{ github.run_id }}-${{ github.run_attempt }}"
+            bash "$CUTOVER_DIR/cutover-nginx.sh"

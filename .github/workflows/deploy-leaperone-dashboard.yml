@@ -7,7 +7,7 @@ on:
     types: [deploy-leaperone-dashboard]
 
 concurrency:
-  group: deploy-leaperone-dashboard-production
+  group: leaperone-frontends-production
   cancel-in-progress: false
 
 jobs:

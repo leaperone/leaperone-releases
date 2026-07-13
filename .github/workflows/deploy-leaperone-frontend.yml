@@ -29,6 +29,16 @@ on:
         type: string
         default: ""
         description: "Optional full SHA which must match requested_ref"
+    outputs:
+      source_sha:
+        description: "Verified LEAPERone source SHA"
+        value: ${{ jobs.build.outputs.source_sha }}
+      image_ref:
+        description: "Published immutable image reference"
+        value: ${{ jobs.build.outputs.image_ref }}
+      image_digest:
+        description: "Published registry manifest digest"
+        value: ${{ jobs.build.outputs.image_digest }}
 
 jobs:
   build:
@@ -67,14 +77,14 @@ jobs:
                 echo "ERROR: expected a ${COMPONENT}-vX.Y.Z release tag, got: $REQUESTED_REF" >&2
                 exit 1
               fi
-              RESOLVED_REF="refs/tags/$REQUESTED_REF"
+              RESOLVED_REF="$REQUESTED_REF"
               ;;
             *)
               if ! [[ "$REQUESTED_REF" =~ ^${COMPONENT}-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
                 echo "ERROR: frontend deploy accepts only main or ${COMPONENT}-vX.Y.Z tags, got: $REQUESTED_REF" >&2
                 exit 1
               fi
-              RESOLVED_REF="$REQUESTED_REF"
+              RESOLVED_REF="refs/tags/$REQUESTED_REF"
               ;;
           esac
 
