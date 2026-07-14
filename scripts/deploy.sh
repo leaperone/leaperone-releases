@@ -28,12 +28,10 @@ if [ ! -f "$APP_DIR/.env" ]; then
 fi
 
 if [ "$PROJECT" = "leaperone" ]; then
-  for service_env in .env.web .env.api; do
-    if [ ! -f "$APP_DIR/$service_env" ]; then
-      echo "ERROR: ${APP_DIR}/${service_env} not found; LEAPERone service env files must be split before deploy" >&2
-      exit 1
-    fi
-  done
+  if [ ! -f "$APP_DIR/.env.api" ]; then
+    echo "ERROR: ${APP_DIR}/.env.api not found; LEAPERone is an API-only compose project" >&2
+    exit 1
+  fi
 fi
 
 cd "$APP_DIR"
@@ -72,7 +70,11 @@ docker compose pull
 echo "==> Starting services and waiting for health checks..."
 docker compose up -d --remove-orphans --wait --wait-timeout 180
 
-if [ -d "$APP_DIR/scripts" ]; then
+if [ "$PROJECT" = "leaperone" ]; then
+  # API releases never own Nginx. This also fail-safes overwrite-only server
+  # syncs where an installer deleted from Git might still exist on disk.
+  echo "==> LEAPERone API-only deploy: post-deploy scripts are disabled"
+elif [ -d "$APP_DIR/scripts" ]; then
   echo "==> Running post-deploy scripts..."
   for script in "$APP_DIR"/scripts/*; do
     if [ -f "$script" ] && [ -x "$script" ]; then

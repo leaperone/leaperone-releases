@@ -85,7 +85,8 @@ jobs:
           envs: DEPLOY_COMPONENTS,IMAGE_SOURCE_SHA,IMAGE_REF,IMAGE_DIGEST,RELEASES_SHA
           script: |
             set -euo pipefail
-            TOOL_DIR="/opt/apps/${{ inputs.project }}/${{ inputs.env }}/.release-tools/${{ github.run_id }}-${{ github.run_attempt }}"
+            APP_DIR="/opt/apps/${{ inputs.project }}/${{ inputs.env }}"
+            TOOL_DIR="${APP_DIR}/.release-tools/${{ github.run_id }}-${{ github.run_attempt }}"
             trap 'rm -rf "$TOOL_DIR"' EXIT
             IMAGE_SOURCE_SHA="${IMAGE_SOURCE_SHA:-}"
             IMAGE_REF="${IMAGE_REF:-}"
@@ -105,7 +106,10 @@ jobs:
 
             case "${{ inputs.project }}" in
               leaperone)
-                export WEB_IMAGE_TAG="web-${IMAGE_SOURCE_SHA}"
+                [[ "$RELEASES_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+                  echo "ERROR: invalid releases repository SHA" >&2
+                  exit 1
+                }
                 export API_IMAGE_TAG="api-${IMAGE_SOURCE_SHA}"
                 ;;
               leaperone-www)
@@ -136,6 +140,44 @@ jobs:
                 echo "ERROR: invalid releases repository SHA" >&2
                 exit 1
               }
+            fi
+
+            if [ "${{ inputs.project }}" = "leaperone" ]; then
+              # scp overwrite does not delete files removed from the repository.
+              # Retire legacy routing payloads before the generic deployer can
+              # see them, preserving a root-only, checksummed audit copy.
+              RETIRED_DIR="/var/lib/leaperone/retired-release-payloads"
+              RETIRE_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+              RETIRE_RECORD="${RETIRED_DIR}/retirements.jsonl"
+              install -d -m 0700 "$RETIRED_DIR"
+              if [ ! -f "$RETIRE_RECORD" ]; then
+                install -m 0600 /dev/null "$RETIRE_RECORD"
+              fi
+              chmod 0600 "$RETIRE_RECORD"
+
+              retire_legacy_payload() {
+                local source="$1"
+                local label="$2"
+                local backup
+                local digest
+                [ -f "$source" ] || return 0
+                backup="${RETIRED_DIR}/${label}.${RELEASES_SHA}.${RETIRE_STAMP}"
+                install -m 0600 "$source" "$backup"
+                digest="$(sha256sum "$backup" | cut -d' ' -f1)"
+                rm -f "$source"
+                printf '{"source":"%s","backup":"%s","sha256":"%s","releases_sha":"%s","retired_at":"%s"}\n' \
+                  "$source" "$backup" "$digest" "$RELEASES_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                  >> "$RETIRE_RECORD"
+                echo "Retired stale LEAPERone payload: $source"
+              }
+
+              retire_legacy_payload \
+                "$APP_DIR/scripts/10-install-nginx-conf.sh" \
+                "legacy-install-nginx-conf.sh"
+              retire_legacy_payload \
+                "$APP_DIR/nginx/leaperone-local.conf" \
+                "legacy-leaperone-local.conf"
+              rmdir "$APP_DIR/scripts" "$APP_DIR/nginx" 2>/dev/null || true
             fi
 
             bash "$TOOL_DIR/deploy.sh" "${{ inputs.project }}" "${{ inputs.env }}"

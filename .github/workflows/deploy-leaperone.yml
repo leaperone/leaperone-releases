@@ -1,15 +1,15 @@
-name: Deploy LEAPERone
+name: Deploy LEAPERone API
 run-name: >-
-  🚀 Deploy LEAPERone · ${{ github.event.client_payload.env || 'production' }} · ${{ github.event.client_payload.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || 'production' }}]
+  🚀 Deploy LEAPERone API · ${{ github.event.client_payload.env || 'production' }} · ${{ github.event.client_payload.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || 'production' }}]
 
 on:
   repository_dispatch:
     types: [deploy-leaperone]
 
 concurrency:
-  # This workflow always targets the same production Web/API pair, regardless
-  # of optional dispatch metadata. Serialize every run against that target.
-  group: deploy-leaperone-production
+  # API releases target one production container. WWW and Dashboard have
+  # separate routing-free workflows and must never be started here.
+  group: deploy-leaperone-api-production
   cancel-in-progress: false
 
 jobs:
@@ -19,7 +19,7 @@ jobs:
       pr_number: ${{ steps.set-ref.outputs.pr_number }}
       is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
       components: ${{ steps.set-ref.outputs.components }}
-      source_sha: ${{ steps.sentry.outputs.release }}
+      source_sha: ${{ steps.source.outputs.sha }}
 
     steps:
       - name: Validate and set ref
@@ -28,25 +28,21 @@ jobs:
           REF="${{ github.event.client_payload.ref }}"
           COMPONENTS="${{ github.event.client_payload.components || github.event.client_payload.build_targets }}"
           if [ -z "$COMPONENTS" ]; then
-            COMPONENTS="web,api"
+            COMPONENTS="api"
           fi
-          DEPLOY_WEB="false"
           DEPLOY_API="false"
           IFS=',' read -ra COMPONENT_LIST <<< "$COMPONENTS"
           for component in "${COMPONENT_LIST[@]}"; do
             component="${component//[[:space:]]/}"
             case "$component" in
-              web)
-                DEPLOY_WEB="true"
-                ;;
               api)
                 DEPLOY_API="true"
                 ;;
-              all)
-                DEPLOY_WEB="true"
-                DEPLOY_API="true"
-                ;;
               "")
+                ;;
+              web|all)
+                echo "ERROR: the legacy Web is retired; deploy WWW/Dashboard with their dedicated workflows" >&2
+                exit 1
                 ;;
               *)
                 echo "ERROR: unknown LEAPERone component: $component" >&2
@@ -54,11 +50,11 @@ jobs:
                 ;;
             esac
           done
-          if [ "$DEPLOY_WEB" != "true" ] || [ "$DEPLOY_API" != "true" ]; then
-            echo "ERROR: deploy-leaperone currently deploys web+api together; use components=web,api or all" >&2
+          if [ "$DEPLOY_API" != "true" ]; then
+            echo "ERROR: deploy-leaperone is API-only; use components=api" >&2
             exit 1
           fi
-          echo "components=web,api" >> $GITHUB_OUTPUT
+          echo "components=api" >> "$GITHUB_OUTPUT"
 
           if [ -z "$REF" ]; then
             echo "ref=main" >> $GITHUB_OUTPUT
@@ -73,8 +69,8 @@ jobs:
           elif [[ "$REF" =~ ^([0-9]+)/merge ]] || [[ "$REF" == *"/merge"* ]]; then
             echo "ERROR: deploy-leaperone is deploy-only and does not accept PR merge refs. Got ref: $REF" >&2
             exit 1
-          elif [[ "$REF" =~ ^(web-)?v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
-            # Tag 格式，标记为需要部署（支持 v*, web-v* 前缀）
+          elif [[ "$REF" =~ ^api-v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/api-v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            # API release tag.
             echo "ref=$REF" >> $GITHUB_OUTPUT
             echo "pr_number=" >> $GITHUB_OUTPUT
             echo "is_deployable=true" >> $GITHUB_OUTPUT
@@ -98,8 +94,8 @@ jobs:
             exit 78
           fi
 
-      - name: Set Sentry release
-        id: sentry
+      - name: Validate checked out API source
+        id: source
         env:
           REQUESTED_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
         run: |
@@ -117,73 +113,23 @@ jobs:
               exit 1
             fi
           fi
-          grep -q 'id=next_server_actions_encryption_key' apps/web/docker/Dockerfile || {
-            echo "ERROR: Web Dockerfile is missing the Server Actions BuildKit secret mount" >&2
+          test -f apps/api/Dockerfile || {
+            echo "ERROR: API Dockerfile is missing" >&2
             exit 1
           }
-          grep -q 'NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE' docker/docker-compose-build.yml || {
-            echo "ERROR: build compose is missing the Server Actions secret file contract" >&2
+          grep -q '^[[:space:]]*leaperone-api:' docker/docker-compose-build.yml || {
+            echo "ERROR: build compose is missing the leaperone-api service" >&2
             exit 1
           }
-          echo "release=$ACTUAL_SOURCE_SHA" >> "$GITHUB_OUTPUT"
-
-      - name: Validate Sentry source map env
-        if: steps.set-ref.outputs.is_deployable == 'true'
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: ${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
-        run: |
-          test -n "$SENTRY_AUTH_TOKEN" || {
-            echo "SENTRY_AUTH_TOKEN is required for deployable web builds"
-            exit 1
-          }
-          test -n "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY" || {
-            echo "NEXT_SERVER_ACTIONS_ENCRYPTION_KEY is required for stable Server Actions"
-            exit 1
-          }
+          echo "sha=$ACTUAL_SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Setup docker-compose
         uses: KengoTODA/actions-setup-docker-compose@v1
         with:
           version: '2.14.2'
 
-      - name: Prepare Web BuildKit secrets
-        id: sentry-secret
-        if: steps.set-ref.outputs.is_deployable == 'true'
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: ${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
-        run: |
-          set -euo pipefail
-          umask 077
-          SECRET_FILE="$RUNNER_TEMP/leaperone-web-api-sentry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          ACTIONS_SECRET_FILE="$RUNNER_TEMP/leaperone-web-server-actions-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          echo "path=$SECRET_FILE" >> "$GITHUB_OUTPUT"
-          echo "actions_path=$ACTIONS_SECRET_FILE" >> "$GITHUB_OUTPUT"
-          printf '%s' "$SENTRY_AUTH_TOKEN" > "$SECRET_FILE"
-          printf '%s' "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY" > "$ACTIONS_SECRET_FILE"
-
-      - name: Build Docker images
-        # Keep the legacy Web/API release isolated from the split frontends.
-        # WWW and Dashboard have independent workflows, tags, and Sentry releases.
-        run: docker compose -f ./docker/docker-compose-build.yml build leaperone-web leaperone-api
-        env:
-          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.LEAPERONE_POSTHOG_KEY }}
-          NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.LEAPERONE_POSTHOG_HOST }}
-          NEXT_PUBLIC_SENTRY_DSN: https://83a80750104b2b1be836f4eceac80d02@sentry.leaperone.cn/4
-          SENTRY_ORG: leaperone
-          SENTRY_PROJECT: leaperone-web
-          SENTRY_URL: https://sentry.leaperone.cn
-          SENTRY_RELEASE: ${{ steps.sentry.outputs.release }}
-          SENTRY_AUTH_TOKEN_FILE: ${{ steps.sentry-secret.outputs.path || '/dev/null' }}
-          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.sentry-secret.outputs.actions_path || '/dev/null' }}
-
-      - name: Remove Web BuildKit secrets
-        if: always() && (steps.sentry-secret.outputs.path != '' || steps.sentry-secret.outputs.actions_path != '')
-        env:
-          SENTRY_AUTH_TOKEN_FILE: ${{ steps.sentry-secret.outputs.path }}
-          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.sentry-secret.outputs.actions_path }}
-        run: rm -f "$SENTRY_AUTH_TOKEN_FILE" "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE"
+      - name: Build API image
+        run: docker compose -f ./docker/docker-compose-build.yml build leaperone-api
 
       - name: Login to Aliyun Docker Registry
         if: steps.set-ref.outputs.is_deployable == 'true'
@@ -193,11 +139,11 @@ jobs:
           username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
           password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
 
-      - name: Push immutable and latest Docker images
+      - name: Push immutable and latest API image
         if: steps.set-ref.outputs.is_deployable == 'true'
         run: |
           set -euo pipefail
-          SOURCE_SHA="${{ steps.sentry.outputs.release }}"
+          SOURCE_SHA="${{ steps.source.outputs.sha }}"
           REGISTRY_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone"
 
           if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
@@ -205,14 +151,11 @@ jobs:
             exit 1
           fi
 
-          docker tag "${REGISTRY_IMAGE}:web-latest" "${REGISTRY_IMAGE}:web-${SOURCE_SHA}"
           docker tag "${REGISTRY_IMAGE}:api-latest" "${REGISTRY_IMAGE}:api-${SOURCE_SHA}"
 
           # Immutable tags are the deployment source of truth. Keep latest for
           # humans and legacy consumers, but never deploy from it here.
-          docker push "${REGISTRY_IMAGE}:web-${SOURCE_SHA}"
           docker push "${REGISTRY_IMAGE}:api-${SOURCE_SHA}"
-          docker push "${REGISTRY_IMAGE}:web-latest"
           docker push "${REGISTRY_IMAGE}:api-latest"
 
       - name: Setup Node.js
