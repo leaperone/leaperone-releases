@@ -1,39 +1,39 @@
-# LEAPERone production compose
+# LEAPERone API production compose
 
-The files in this directory are synchronized to
-`/opt/apps/leaperone/production` by the deployment workflow.
+This directory is synchronized to `/opt/apps/leaperone/production`. It owns
+only `leaperone-api-production`; WWW and Dashboard have separate projects and
+the retired legacy Web must never be started by an API release.
 
-The server-side environment is intentionally split:
+Server-only files:
 
-- `.env` is read by Docker Compose for interpolation only. Keep deployment
-  settings such as `DEPLOY_ENV`, `REGISTRY_HOST`, ports, runtime-role flags,
-  and other compose substitutions here.
-- `.env.web` contains the web application's runtime variables and secrets.
-- `.env.api` contains the API application's runtime variables and secrets.
+- `.env` is Docker Compose interpolation data. Keep `DEPLOY_ENV`,
+  `REGISTRY_HOST`, `API_PORT`, and API worker flags here.
+- `.env.api` contains API runtime variables and secrets.
+- `alipay-cert/` contains the certificates mounted read-only for callback
+  verification.
 
-All three files are production-only, mode `0600`, and must not be committed.
-The workflow supplies `WEB_IMAGE_TAG=web-<source-sha>` and
-`API_IMAGE_TAG=api-<source-sha>` to Docker Compose for each deployment, so the
-running containers never depend on a mutable `latest` tag.
+Both env files must remain `root:root`, mode `0600`, and must not be committed.
+The workflow supplies an immutable `API_IMAGE_TAG=api-<source-sha>`;
+production never deploys `api-latest`.
 
-Alipay certificate mode also requires the server-only `alipay-cert/` directory
-next to the Compose file. It is mounted read-only into both services at
-`/app/alipay-cert`; Web uses all three certificates to create payment requests,
-while API uses the Alipay public certificate to verify callbacks. The directory
-must contain:
+The existing API workflow remains the owner of its reviewed database migration
+step before the API container is replaced. This API-only retirement does not
+change that migration contract. The separate WWW/Dashboard workflows and
+one-shot frontend cutover continue to record `"migration":"none"` and never
+open a database tunnel or run `db:migrate`.
 
-- `appCertPublicKey_<app-id>.crt`
-- `alipayCertPublicKey_RSA2.crt`
-- `alipayRootCert.crt`
+## Legacy Web retirement
 
-## One-time migration from the legacy shared `.env`
+The first API-only `docker compose up --remove-orphans` removes any stopped
+`leaperone-web-production` orphan. Before that first release, retain its
+immutable image metadata and `.env.web` as root-only cold rollback evidence.
+Because overwrite-only SCP leaves deleted repository files on the server, the
+DE deploy entrypoint first copies any stale legacy Nginx installer/config to
+`/var/lib/leaperone/retired-release-payloads`, records its SHA256 and releases
+SHA, and removes it from the active app directory. The generic deployer also
+disables all post-deploy scripts for this API-only project.
+After the rollback window, archive or remove `.env.web` and delete stale
+`WEB_IMAGE_TAG`, `WEB_PORT`, and `INSTALL_NGINX_CONF` entries from `.env`.
 
-This compose change deliberately fails closed until `.env.web` and `.env.api`
-exist. Before the first deployment, back up the legacy file and create both
-service files. A conservative transition is to copy the existing shared file
-to both service files first (this preserves the old runtime behavior), then
-reduce each file to the variables its service actually needs. Finally replace
-root `.env` with compose-only settings.
-
-Do this as a separately reviewed production configuration change. Do not let
-the deployment workflow guess how secrets should be assigned to services.
+There is no Nginx payload in this project. Final routing is owned only by the
+reviewed frontend cutover configuration under `ops/leaperone-frontend/`.

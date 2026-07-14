@@ -38,7 +38,6 @@ jobs:
             compose/leaperone-dashboard/scripts/10-readiness.sh \
             compose/leaperone-www/preflight.sh \
             compose/leaperone-www/scripts/10-install-nginx-conf.sh \
-            compose/leaperone/scripts/10-install-nginx-conf.sh \
             ops/leaperone-frontend/cutover/cutover-nginx.sh \
             ops/leaperone-frontend/rollback-nginx.sh \
             ops/leaperone-frontend/test-manifests.sh \
@@ -46,8 +45,15 @@ jobs:
             ops/leaperone-frontend/test-workflow-contracts.sh \
             scripts/deploy.sh
 
-      - name: Parse split frontend Compose files
+      - name: Parse LEAPERone Compose files
         run: |
+          docker compose -f compose/leaperone/docker-compose.yml config --no-interpolate --quiet
+          api_services="$(API_IMAGE_TAG=api-0123456789abcdef0123456789abcdef01234567 \
+            docker compose -f compose/leaperone/docker-compose.yml config --services)"
+          [ "$api_services" = "api" ] || {
+            echo "ERROR: compose/leaperone must contain only the API service" >&2
+            exit 1
+          }
           docker compose -f compose/leaperone-www/docker-compose.yml config --no-interpolate --quiet
           docker compose -f compose/leaperone-dashboard/docker-compose.yml config --no-interpolate --quiet
 
@@ -87,7 +93,6 @@ jobs:
             compose/leaperone-dashboard/scripts/10-readiness.sh \
             compose/leaperone-www/preflight.sh \
             compose/leaperone-www/scripts/10-install-nginx-conf.sh \
-            compose/leaperone/scripts/10-install-nginx-conf.sh \
             ops/leaperone-frontend/cutover/cutover-nginx.sh \
             ops/leaperone-frontend/rollback-nginx.sh \
             ops/leaperone-frontend/test-manifests.sh \

@@ -5,7 +5,10 @@ verifies both immutable images on the Germany host, and performs one atomic
 Nginx replacement. There is no candidate mode, temporary `next.leaper.one`,
 legacy Web upstream, or staged routing state.
 
-The frontend workflow does not migrate the database or restart the API.
+The frontend workflow does not migrate the database or restart the API. The
+separate `deploy-leaperone` workflow is API-only: it builds and deploys only
+`leaperone-api`, while preserving its existing reviewed database migration
+step before container replacement.
 
 ## Final topology
 
@@ -151,6 +154,42 @@ routine component releases. They share the same production concurrency group,
 deploy immutable images, and never edit Nginx. Use the paired workflow whenever
 both components must move on one source SHA.
 
+## API-only releases and legacy Web retirement
+
+`deploy-leaperone` accepts only `components=api` (or the default empty
+component payload), builds only `leaperone-api`, pushes only API tags, runs the
+existing API-owned migration step, and deploys the `compose/leaperone` project.
+That Compose project contains only `leaperone-api-production`; it has no Web
+service, `.env.web` dependency, port `9800`, or Nginx payload.
+
+```bash
+SOURCE_SHA=<full-leaperone-main-sha>
+gh api repos/leaperone/leaperone-releases/dispatches \
+  -f event_type=deploy-leaperone \
+  -F 'client_payload[ref]=main' \
+  -F 'client_payload[components]=api' \
+  -F "client_payload[source_sha]=$SOURCE_SHA"
+```
+
+The first API-only deploy uses `docker compose up --remove-orphans`, so a
+stopped `leaperone-web-production` container is removed instead of restarted.
+Before that deploy, retain its immutable image reference, image ID, RepoDigest,
+and root-only `.env.web` as rollback evidence. After the observation window,
+remove stale `WEB_IMAGE_TAG`, `WEB_PORT`, and `INSTALL_NGINX_CONF` entries from
+the server `.env`, then archive or securely remove `.env.web` and any obsolete
+`compose/leaperone/nginx` payload left by older overwrite-only syncs.
+
+Before the generic deployer runs, the DE workflow handles overwrite-only SCP
+drift explicitly: any server-resident legacy Nginx installer or config is
+copied to `/var/lib/leaperone/retired-release-payloads`, checksummed, recorded
+with the releases SHA, and removed from the active project directory. The
+generic deployer additionally skips the entire post-deploy scripts phase for
+the `leaperone` project, so an unknown stale installer cannot execute.
+
+Do not interpret the API migration step as permission to migrate during a
+frontend release. WWW, Dashboard, and the paired cutover remain explicitly
+`"migration":"none"`.
+
 ## Rollback
 
 The cutover log prints a UTC backup stamp. Restore that exact Nginx pair with:
@@ -163,8 +202,13 @@ The rollback script takes the same global host lock, saves a rescue copy of
 the current files, validates the requested backup with `nginx -t`, reloads, and
 restores the rescue files if rollback fails.
 
-Image rollback uses the immutable refs and digests recorded in
-`frontend-deployments.jsonl`; never infer a rollback from `latest`. The old Web
-may remain running but is not reachable in the final config. If the selected
-Nginx backup points to legacy `:9800`, verify or restore that container before
-executing the Nginx rollback.
+Frontend image rollback uses the immutable refs and digests recorded in
+`frontend-deployments.jsonl`; never infer a rollback from `latest`.
+
+The legacy Web is a cold rollback artifact, not an active service or routing
+compatibility layer. While its stopped container still exists, restore it with
+`docker start leaperone-web-production` and verify
+`http://127.0.0.1:9800/api/health` before restoring an Nginx backup that points
+to `:9800`. After orphan cleanup removes the container, recreate it only from
+the reviewed immutable Web image and preserved root-only manifest before using
+that Nginx backup. Normal API, WWW, and Dashboard releases must never start it.
