@@ -31,6 +31,11 @@ on:
         type: string
         default: ""
         description: "Expected registry manifest digest for deployment verification"
+      safety_attestation:
+        required: false
+        type: string
+        default: ""
+        description: "Explicit project safety contract asserted by the caller"
       runner:
         required: false
         type: string
@@ -43,6 +48,9 @@ jobs:
     steps:
       - name: Checkout deployment configs
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Sync compose directory to server
         uses: appleboy/scp-action@v0.1.7
@@ -75,6 +83,7 @@ jobs:
           IMAGE_SOURCE_SHA: ${{ inputs.image_source_sha }}
           IMAGE_REF: ${{ inputs.image_ref }}
           IMAGE_DIGEST: ${{ inputs.image_digest }}
+          SAFETY_ATTESTATION: ${{ inputs.safety_attestation }}
           RELEASES_SHA: ${{ github.sha }}
         with:
           host: ${{ secrets.DE_APP_HOST }}
@@ -82,7 +91,7 @@ jobs:
           key: ${{ secrets.DE_APP_SSH_KEY }}
           port: ${{ secrets.DE_APP_PORT }}
           command_timeout: 20m
-          envs: DEPLOY_COMPONENTS,IMAGE_SOURCE_SHA,IMAGE_REF,IMAGE_DIGEST,RELEASES_SHA
+          envs: DEPLOY_COMPONENTS,IMAGE_SOURCE_SHA,IMAGE_REF,IMAGE_DIGEST,SAFETY_ATTESTATION,RELEASES_SHA
           script: |
             set -euo pipefail
             APP_DIR="/opt/apps/${{ inputs.project }}/${{ inputs.env }}"
@@ -91,12 +100,15 @@ jobs:
             IMAGE_SOURCE_SHA="${IMAGE_SOURCE_SHA:-}"
             IMAGE_REF="${IMAGE_REF:-}"
             IMAGE_DIGEST="${IMAGE_DIGEST:-}"
+            SAFETY_ATTESTATION="${SAFETY_ATTESTATION:-}"
             RELEASES_SHA="${RELEASES_SHA:-}"
             COMPONENT=""
             CONTAINER_NAME=""
+            EXPECTED_IMAGE_REF=""
+            EXPECTED_REPO_DIGEST=""
 
             case "${{ inputs.project }}" in
-              leaperone|leaperone-www|leaperone-dashboard)
+              leaperone|leaperone-www|leaperone-dashboard|dokilove|nimei)
                 if [ "${#IMAGE_SOURCE_SHA}" -ne 40 ] || [[ "$IMAGE_SOURCE_SHA" == *[!0-9a-f]* ]]; then
                   echo "ERROR: ${{ inputs.project }} deploy requires a full lowercase Git source SHA" >&2
                   exit 1
@@ -115,19 +127,37 @@ jobs:
               leaperone-www)
                 COMPONENT="www"
                 CONTAINER_NAME="leaperone-www-production"
+                EXPECTED_IMAGE_REF="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:www-${IMAGE_SOURCE_SHA}"
                 export WWW_IMAGE_TAG="www-${IMAGE_SOURCE_SHA}"
                 export WWW_IMAGE_DIGEST="$IMAGE_DIGEST"
                 ;;
               leaperone-dashboard)
                 COMPONENT="dashboard"
                 CONTAINER_NAME="leaperone-dashboard-production"
+                EXPECTED_IMAGE_REF="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:dashboard-${IMAGE_SOURCE_SHA}"
                 export DASHBOARD_IMAGE_TAG="dashboard-${IMAGE_SOURCE_SHA}"
                 export DASHBOARD_IMAGE_DIGEST="$IMAGE_DIGEST"
                 ;;
+              dokilove)
+                COMPONENT="dokilove-web"
+                CONTAINER_NAME="dokilove-web-production"
+                EXPECTED_IMAGE_REF="registry.cn-hongkong.aliyuncs.com/leaperone/dokilove:web-${IMAGE_SOURCE_SHA}"
+                [ "$SAFETY_ATTESTATION" = "doki-consumer-lockout-v1" ] || {
+                  echo "ERROR: DokiLove deploy requires doki-consumer-lockout-v1 attestation" >&2
+                  exit 1
+                }
+                export IMAGE_TAG="web-${IMAGE_SOURCE_SHA}"
+                export SENTRY_RELEASE="dokilove-web@${IMAGE_SOURCE_SHA}"
+                ;;
+              nimei)
+                COMPONENT="nimei-web"
+                EXPECTED_IMAGE_REF="registry.cn-hongkong.aliyuncs.com/leaperone/nimei:web-${IMAGE_SOURCE_SHA}"
+                export IMAGE_TAG="web-${IMAGE_SOURCE_SHA}"
+                export SENTRY_RELEASE="nimei-web@${IMAGE_SOURCE_SHA}"
+                ;;
             esac
 
-            if [ -n "$COMPONENT" ]; then
-              EXPECTED_IMAGE_REF="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:${COMPONENT}-${IMAGE_SOURCE_SHA}"
+            if [ -n "$EXPECTED_IMAGE_REF" ]; then
               [ "$IMAGE_REF" = "$EXPECTED_IMAGE_REF" ] || {
                 echo "ERROR: unexpected immutable image ref: $IMAGE_REF" >&2
                 exit 1
@@ -140,6 +170,17 @@ jobs:
                 echo "ERROR: invalid releases repository SHA" >&2
                 exit 1
               }
+              IMAGE_REPOSITORY="${IMAGE_REF%:*}"
+              EXPECTED_REPO_DIGEST="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+              export IMAGE_REF IMAGE_DIGEST IMAGE_SOURCE_SHA
+              export DEPLOY_IMAGE_REF="$EXPECTED_REPO_DIGEST"
+            fi
+
+            if [ "${{ inputs.project }}" = "dokilove" ]; then
+              install -d -m 0700 /var/lib/dokilove/consumer-lockout-images
+              printf '%s\n' "$EXPECTED_REPO_DIGEST" > \
+                "/var/lib/dokilove/consumer-lockout-images/${IMAGE_SOURCE_SHA}"
+              chmod 0600 "/var/lib/dokilove/consumer-lockout-images/${IMAGE_SOURCE_SHA}"
             fi
 
             if [ "${{ inputs.project }}" = "leaperone" ]; then
@@ -182,16 +223,26 @@ jobs:
 
             bash "$TOOL_DIR/deploy.sh" "${{ inputs.project }}" "${{ inputs.env }}"
 
-            [ -n "$COMPONENT" ] || exit 0
-
-            IMAGE_REPOSITORY="${IMAGE_REF%:*}"
-            EXPECTED_REPO_DIGEST="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
-            CONTAINER_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$CONTAINER_NAME")"
-            if ! docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$CONTAINER_IMAGE_ID" \
-              | grep -Fxq "$EXPECTED_REPO_DIGEST"; then
-              echo "ERROR: $CONTAINER_NAME is not running expected RepoDigest $EXPECTED_REPO_DIGEST" >&2
-              exit 1
+            if [ -n "$CONTAINER_NAME" ]; then
+              CONTAINER_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$CONTAINER_NAME")"
+              if ! docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$CONTAINER_IMAGE_ID" \
+                | grep -Fxq "$EXPECTED_REPO_DIGEST"; then
+                echo "ERROR: $CONTAINER_NAME is not running expected RepoDigest $EXPECTED_REPO_DIGEST" >&2
+                exit 1
+              fi
+              if [ "${{ inputs.project }}" = "dokilove" ]; then
+                [ "$(docker inspect --format '{{index .Config.Labels "com.leaperone.source-sha"}}' "$CONTAINER_NAME")" = "$IMAGE_SOURCE_SHA" ] || {
+                  echo "ERROR: DokiLove source SHA label mismatch" >&2
+                  exit 1
+                }
+                [ "$(docker inspect --format '{{index .Config.Labels "com.leaperone.image-digest"}}' "$CONTAINER_NAME")" = "$IMAGE_DIGEST" ] || {
+                  echo "ERROR: DokiLove digest label mismatch" >&2
+                  exit 1
+                }
+              fi
             fi
+
+            [ -n "$COMPONENT" ] || exit 0
 
             RECORD_DIR="/var/lib/leaperone/deployments"
             RECORD_FILE="${RECORD_DIR}/frontend-deployments.jsonl"
