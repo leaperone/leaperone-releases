@@ -1,34 +1,51 @@
 name: Deploy DokiLove
 run-name: >-
-  🚀 Deploy DokiLove · ${{ github.event.client_payload.env || inputs.env || 'production' }} · ${{ github.event.client_payload.message || inputs.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || inputs.env || 'production' }}]
+  🚀 Deploy DokiLove · ${{ github.event.client_payload.env || 'production' }} · ${{ github.event.client_payload.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || 'production' }}]
 
 on:
   repository_dispatch:
     types: [deploy-dokilove]
+
+permissions:
+  contents: read
+
+# Mutable latest tags and the one-time identity cutover must never race another
+# DokiLove production dispatch.
+concurrency:
+  group: deploy-dokilove-production
+  cancel-in-progress: false
+
+env:
+  DOKILOVE_SENTRY_DSN: https://ad95f8e28d800b13f55fa2e67e302cb9@sentry.leaperone.cn/7
+  NIMEI_MIGRATION_CREATED_AT: "1784106657989"
 
 jobs:
   resolve-context:
     runs-on: ubuntu-latest
     outputs:
       ref: ${{ steps.resolve.outputs.ref }}
-      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      source_sha: ${{ steps.pin.outputs.source_sha }}
       is_deployable: ${{ steps.resolve.outputs.is_deployable }}
       deploy_de: ${{ steps.resolve.outputs.deploy_de }}
       build_web: ${{ steps.resolve.outputs.build_web }}
+      build_nimei: ${{ steps.resolve.outputs.build_nimei }}
       build_worker: ${{ steps.resolve.outputs.build_worker }}
       build_tgbot: ${{ steps.resolve.outputs.build_tgbot }}
     steps:
       - name: Resolve deploy context
         id: resolve
+        env:
+          REQUESTED_REF: ${{ github.event.client_payload.ref || '' }}
+          REQUESTED_ENV: ${{ github.event.client_payload.env || '' }}
+          REQUESTED_COMPONENTS: ${{ github.event.client_payload.components || github.event.client_payload.build_targets || '' }}
+        shell: bash
         run: |
-          REF="${{ github.event.client_payload.ref }}"
-          ENV_INPUT="${{ github.event.client_payload.env }}"
-          COMPONENTS="${{ github.event.client_payload.components || github.event.client_payload.build_targets }}"
+          set -euo pipefail
+          REF="$REQUESTED_REF"
+          ENV_INPUT="$REQUESTED_ENV"
+          COMPONENTS="$REQUESTED_COMPONENTS"
 
-          IS_DEPLOYABLE="true"
-          DEPLOY_DE="true"
-
-          if [ "$ENV_INPUT" != "" ] && [ "$ENV_INPUT" != "production" ]; then
+          if [ -n "$ENV_INPUT" ] && [ "$ENV_INPUT" != "production" ]; then
             echo "ERROR: deploy-dokilove only supports env=production, got: $ENV_INPUT" >&2
             exit 1
           fi
@@ -38,6 +55,7 @@ jobs:
           fi
 
           BUILD_WEB="false"
+          BUILD_NIMEI="false"
           BUILD_WORKER="false"
           BUILD_TGBOT="false"
 
@@ -48,6 +66,9 @@ jobs:
               web)
                 BUILD_WEB="true"
                 ;;
+              nimei)
+                BUILD_NIMEI="true"
+                ;;
               worker)
                 BUILD_WORKER="true"
                 ;;
@@ -56,6 +77,7 @@ jobs:
                 ;;
               all)
                 BUILD_WEB="true"
+                BUILD_NIMEI="true"
                 BUILD_WORKER="true"
                 BUILD_TGBOT="true"
                 ;;
@@ -67,7 +89,8 @@ jobs:
                 ;;
             esac
           done
-          if [ "$BUILD_WEB" = "false" ] && [ "$BUILD_WORKER" = "false" ] && [ "$BUILD_TGBOT" = "false" ]; then
+          if [ "$BUILD_WEB" = "false" ] && [ "$BUILD_NIMEI" = "false" ] && \
+             [ "$BUILD_WORKER" = "false" ] && [ "$BUILD_TGBOT" = "false" ]; then
             echo "ERROR: no DokiLove components selected from: $COMPONENTS" >&2
             exit 1
           fi
@@ -81,7 +104,8 @@ jobs:
           elif [[ "$REF" =~ ^([0-9]+)/merge ]] || [[ "$REF" == *"/merge"* ]]; then
             echo "ERROR: deploy-dokilove is deploy-only and does not accept PR merge refs. Got ref: $REF" >&2
             exit 1
-          elif [[ "$REF" =~ ^(web-|worker-)?v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
+          elif [[ "$REF" =~ ^(web-|worker-|nimei-)?v[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
+               [[ "$REF" =~ ^refs/tags/(web-|worker-|nimei-)?v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             RESOLVED_REF="$REF"
             echo "检测到 tag: $REF，将执行部署"
           else
@@ -89,34 +113,402 @@ jobs:
             exit 1
           fi
 
-          echo "ref=$RESOLVED_REF" >> "$GITHUB_OUTPUT"
-          echo "pr_number=" >> "$GITHUB_OUTPUT"
-          echo "is_deployable=$IS_DEPLOYABLE" >> "$GITHUB_OUTPUT"
-          echo "deploy_de=$DEPLOY_DE" >> "$GITHUB_OUTPUT"
-          echo "build_web=$BUILD_WEB" >> "$GITHUB_OUTPUT"
-          echo "build_worker=$BUILD_WORKER" >> "$GITHUB_OUTPUT"
-          echo "build_tgbot=$BUILD_TGBOT" >> "$GITHUB_OUTPUT"
+          {
+            echo "ref=$RESOLVED_REF"
+            echo "is_deployable=true"
+            echo "deploy_de=true"
+            echo "build_web=$BUILD_WEB"
+            echo "build_nimei=$BUILD_NIMEI"
+            echo "build_worker=$BUILD_WORKER"
+            echo "build_tgbot=$BUILD_TGBOT"
+          } >> "$GITHUB_OUTPUT"
 
-  build-and-push:
+      - name: Resolve the immutable DokiLove source commit
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/DokiLove
+          ref: ${{ steps.resolve.outputs.ref }}
+          path: source-resolver
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Pin and verify the source SHA
+        id: pin
+        env:
+          DISPATCH_SOURCE_SHA: ${{ github.event.client_payload.source_sha || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved_sha="$(git -C source-resolver rev-parse HEAD)"
+          [[ "$resolved_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "ERROR: checkout did not resolve to a full lowercase Git SHA" >&2
+            exit 1
+          }
+          if [ -n "$DISPATCH_SOURCE_SHA" ]; then
+            [[ "$DISPATCH_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "ERROR: client_payload.source_sha must be a full lowercase Git SHA" >&2
+              exit 1
+            }
+            [ "$DISPATCH_SOURCE_SHA" = "$resolved_sha" ] || {
+              echo "ERROR: client_payload.source_sha does not match the resolved ref commit" >&2
+              exit 1
+            }
+          fi
+          echo "source_sha=$resolved_sha" >> "$GITHUB_OUTPUT"
+
+  inspect-nimei-cutover:
     needs: resolve-context
     if: needs.resolve-context.outputs.is_deployable == 'true'
     runs-on: ubuntu-latest
     outputs:
-      app_sha: ${{ steps.app-sha.outputs.sha }}
-      sentry_release: ${{ steps.sentry.outputs.release }}
+      cutover_state: ${{ steps.inspect.outputs.cutover_state }}
+      cutover_required: ${{ steps.inspect.outputs.cutover_required }}
+      marker_recovery_required: ${{ steps.inspect.outputs.marker_recovery_required }}
+      recovery_source_sha: ${{ steps.inspect.outputs.recovery_source_sha }}
+      recovery_doki_digest: ${{ steps.inspect.outputs.recovery_doki_digest }}
+      recovery_backup_dir: ${{ steps.inspect.outputs.recovery_backup_dir }}
+      recovery_backup_sha: ${{ steps.inspect.outputs.recovery_backup_sha }}
+    steps:
+      - name: Checkout DokiLove source
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/DokiLove
+          ref: ${{ needs.resolve-context.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Require the shared DB migration package
+        env:
+          PINNED_SOURCE_SHA: ${{ needs.resolve-context.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$PINNED_SOURCE_SHA" ] || {
+            echo "ERROR: inspect checkout does not match the pinned source SHA" >&2
+            exit 1
+          }
+          test -f packages/db/package.json
+          test -f packages/db/migrations/0027_nervous_captain_britain.sql
+          grep -Fq '"name": "@dokilove/db"' packages/db/package.json
+
+      - name: Configure DE SSH
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DE_APP_HOST" || { echo "DE_APP_HOST required"; exit 1; }
+          test -n "$DE_APP_USERNAME" || { echo "DE_APP_USERNAME required"; exit 1; }
+          test -n "$DE_APP_SSH_KEY" || { echo "DE_APP_SSH_KEY required"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DE_APP_SSH_KEY" > ~/.ssh/de_app_key
+          chmod 600 ~/.ssh/de_app_key
+          ssh-keyscan -p "${DE_APP_PORT:-22}" "$DE_APP_HOST" >> ~/.ssh/known_hosts
+
+      - name: Inspect production cutover state
+        id: inspect
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          state_record="$(ssh -i ~/.ssh/de_app_key -p "${DE_APP_PORT:-22}" \
+            "${DE_APP_USERNAME}@${DE_APP_HOST}" \
+            "NIMEI_MIGRATION_CREATED_AT='$NIMEI_MIGRATION_CREATED_AT' bash -s" <<'REMOTE'
+          set -euo pipefail
+          psqlq() {
+            docker exec postgres-production psql -X -v ON_ERROR_STOP=1 \
+              -U postgres -d dokilove_db -Atqc "$1"
+          }
+
+          table_count="$(psqlq "select count(*) from (values
+            ('nimei_user'),('nimei_account'),('nimei_session'),('nimei_passkey'),('nimei_verification')
+          ) expected(name) where to_regclass('public.' || expected.name) is not null;")"
+          constraint_count="$(psqlq "select count(*) from pg_constraint where conname in (
+            'nimei_account_userId_nimei_user_id_fk',
+            'nimei_passkey_userId_nimei_user_id_fk',
+            'nimei_session_userId_nimei_user_id_fk',
+            'card_uploaderId_nimei_user_id_fk',
+            'card_summon_userId_nimei_user_id_fk',
+            'chat_message_userId_nimei_user_id_fk',
+            'chat_session_userId_nimei_user_id_fk',
+            'chat_usage_daily_userId_nimei_user_id_fk',
+            'user_api_key_userId_nimei_user_id_fk',
+            'user_chat_preferences_userId_nimei_user_id_fk',
+            'user_banned_userId_nimei_user_id_fk'
+          );")"
+
+          migration_recorded="f"
+          if [ "$(psqlq "select to_regclass('drizzle.__drizzle_migrations') is not null;")" = "t" ]; then
+            migration_recorded="$(psqlq "select exists(
+              select 1 from drizzle.__drizzle_migrations
+              where created_at = ${NIMEI_MIGRATION_CREATED_AT}
+            );")"
+          fi
+
+          marker=/var/lib/dokilove/nimei-cutover-complete.json
+          if [ "$table_count" = "0" ] && [ "$constraint_count" = "0" ] && [ "$migration_recorded" = "f" ]; then
+            [ ! -e "$marker" ] || {
+              echo "ERROR: cutover marker exists but migration schema is absent" >&2
+              exit 1
+            }
+            printf 'pending||||\n'
+          elif [ "$table_count" = "5" ] && [ "$constraint_count" = "11" ] && [ "$migration_recorded" = "t" ]; then
+            if [ -s "$marker" ]; then
+              grep -qE '"dokilove_image_digest":"sha256:[0-9a-f]{64}"' "$marker" || {
+                echo "ERROR: sealed cutover marker lacks a valid DokiLove digest" >&2
+                exit 1
+              }
+              grep -qE '"nimei_image_digest":"sha256:[0-9a-f]{64}"' "$marker" || {
+                echo "ERROR: sealed cutover marker lacks a valid NIMEI digest" >&2
+                exit 1
+              }
+              grep -qF '"rollback_policy":"no-legacy-doki-consumer-image"' "$marker" || {
+                echo "ERROR: sealed cutover marker lacks rollback policy" >&2
+                exit 1
+              }
+              printf 'sealed||||\n'
+              exit 0
+            fi
+
+            missing_users="$(psqlq 'select count(*) from "user" u left join nimei_user n on n.id=u.id where n.id is null;')"
+            missing_accounts="$(psqlq 'select count(*) from account a left join nimei_account n on n.id=a.id where n.id is null;')"
+            legacy_consumer_sessions="$(psqlq "select count(*) from session s join \"user\" u on u.id=s.\"userId\" where coalesce(u.role,'user') <> 'admin';")"
+            leaked_uploaded_cards="$(psqlq "select count(*) from card where \"uploaderId\" is not null and (visibility <> 'private' or \"distributionEligible\" is distinct from false);")"
+            nimei_passkeys="$(psqlq 'select count(*) from nimei_passkey;')"
+            [ "$missing_users" = "0" ] || { echo "ERROR: migrated-unsealed state has $missing_users missing users" >&2; exit 1; }
+            [ "$missing_accounts" = "0" ] || { echo "ERROR: migrated-unsealed state has $missing_accounts missing accounts" >&2; exit 1; }
+            [ "$legacy_consumer_sessions" = "0" ] || { echo "ERROR: migrated-unsealed state has legacy consumer sessions" >&2; exit 1; }
+            [ "$leaked_uploaded_cards" = "0" ] || { echo "ERROR: migrated-unsealed state has public/distributable uploaded cards" >&2; exit 1; }
+            [ "$nimei_passkeys" = "0" ] || { echo "ERROR: migrated-unsealed state unexpectedly contains NIMEI passkeys" >&2; exit 1; }
+
+            [ "$(docker inspect --format '{{.State.Running}}' dokilove-web-production 2>/dev/null || true)" = "true" ] || {
+              echo "ERROR: migrated-unsealed recovery requires a running DokiLove container" >&2
+              exit 1
+            }
+            running_source_sha="$(docker inspect --format '{{index .Config.Labels "com.leaperone.source-sha"}}' dokilove-web-production)"
+            running_digest="$(docker inspect --format '{{index .Config.Labels "com.leaperone.image-digest"}}' dokilove-web-production)"
+            [[ "$running_source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "ERROR: running DokiLove has no valid source SHA label" >&2; exit 1; }
+            [[ "$running_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "ERROR: running DokiLove has no valid digest label" >&2; exit 1; }
+            expected_repo_digest="registry.cn-hongkong.aliyuncs.com/leaperone/dokilove@${running_digest}"
+            [ "$(docker inspect --format '{{.Config.Image}}' dokilove-web-production)" = "$expected_repo_digest" ] || {
+              echo "ERROR: running DokiLove Config.Image is not digest-pinned" >&2
+              exit 1
+            }
+            container_image_id="$(docker inspect --format '{{.Image}}' dokilove-web-production)"
+            docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$container_image_id" \
+              | grep -Fxq "$expected_repo_digest" || {
+                echo "ERROR: running DokiLove RepoDigest does not match its attested digest" >&2
+                exit 1
+              }
+            safe_file="/var/lib/dokilove/consumer-lockout-images/${running_source_sha}"
+            [ -s "$safe_file" ] && [ "$(tr -d '\r\n' < "$safe_file")" = "$expected_repo_digest" ] || {
+              echo "ERROR: running DokiLove artifact is not consumer-lockout attested" >&2
+              exit 1
+            }
+
+            assert_status() {
+              local expected="$1"
+              local method="$2"
+              local path="$3"
+              local status
+              if [ "$method" = "POST" ]; then
+                status="$(curl -sSk --max-time 8 -o /dev/null -w '%{http_code}' \
+                  --resolve doki.love:443:127.0.0.1 -H 'Content-Type: application/json' \
+                  -d '{}' "https://doki.love${path}")"
+              else
+                status="$(curl -sSk --max-time 8 -o /dev/null -w '%{http_code}' \
+                  --resolve doki.love:443:127.0.0.1 "https://doki.love${path}")"
+              fi
+              [ "$status" = "$expected" ] || {
+                echo "ERROR: DokiLove $path returned HTTP $status, expected $expected" >&2
+                exit 1
+              }
+            }
+            assert_not_blocked() {
+              local path="$1"
+              local status
+              status="$(curl -sSk --max-time 8 -o /dev/null -w '%{http_code}' \
+                --resolve doki.love:443:127.0.0.1 "https://doki.love${path}")"
+              [ "$status" != "403" ] && [ "$status" != "000" ] || {
+                echo "ERROR: allowed DokiLove auth path $path is blocked/unreachable" >&2
+                exit 1
+              }
+            }
+            assert_status 403 POST /api/auth/sign-up/email
+            assert_status 403 POST /api/auth/change-password
+            assert_status 403 GET /api/auth/passkey/generate-register-options
+            assert_not_blocked /api/auth/get-session
+            assert_not_blocked /api/auth/passkey/generate-authenticate-options
+
+            recovery_backup_dir=""
+            recovery_backup_sha=""
+            pending=/var/lib/dokilove/nimei-cutover-pending.env
+            if [ -s "$pending" ]; then
+              journal_value() { awk -F= -v wanted="$1" '$1 == wanted {sub("^[^=]*=", ""); print; exit}' "$pending"; }
+              [ "$(journal_value source_sha)" = "$running_source_sha" ] || { echo "ERROR: pending journal source SHA mismatch" >&2; exit 1; }
+              [ "$(journal_value dokilove_image_digest)" = "$running_digest" ] || { echo "ERROR: pending journal Doki digest mismatch" >&2; exit 1; }
+              [ "$(journal_value dokilove_image_ref)" = "registry.cn-hongkong.aliyuncs.com/leaperone/dokilove:web-${running_source_sha}" ] || {
+                echo "ERROR: pending journal Doki image ref mismatch" >&2
+                exit 1
+              }
+              recovery_backup_dir="$(journal_value backup_dir)"
+              recovery_backup_sha="$(journal_value backup_sha256)"
+            else
+              for metadata in $(find /opt/backups/dokilove-nimei-cutover -mindepth 2 -maxdepth 2 -type f -name METADATA -print 2>/dev/null | sort -r); do
+                candidate_dir="${metadata%/METADATA}"
+                [ "$(awk -F= '$1 == "source_sha" {print $2; exit}' "$metadata")" = "$running_source_sha" ] || continue
+                dump="$candidate_dir/dokilove_db.before-0027.dump"
+                [ -s "$dump" ] && [ -s "$candidate_dir/SHA256SUMS" ] || continue
+                (cd "$candidate_dir" && sha256sum --check --strict SHA256SUMS >/dev/null) || continue
+                docker exec -i postgres-production pg_restore --list < "$dump" >/dev/null || continue
+                recovery_backup_dir="$candidate_dir"
+                recovery_backup_sha="$(cut -d' ' -f1 "$candidate_dir/SHA256SUMS")"
+                break
+              done
+            fi
+            [ -n "$recovery_backup_dir" ] || {
+              echo "ERROR: no validated pre-0027 backup matches the running attested DokiLove SHA" >&2
+              exit 1
+            }
+            [[ "$recovery_backup_sha" =~ ^[0-9a-f]{64}$ ]] || { echo "ERROR: invalid recovery backup SHA256" >&2; exit 1; }
+            [ -s "$recovery_backup_dir/dokilove_db.before-0027.dump" ] && [ -s "$recovery_backup_dir/SHA256SUMS" ] || {
+              echo "ERROR: recovery backup files are missing" >&2
+              exit 1
+            }
+            [ "$(cut -d' ' -f1 "$recovery_backup_dir/SHA256SUMS")" = "$recovery_backup_sha" ] || {
+              echo "ERROR: recovery backup journal SHA mismatch" >&2
+              exit 1
+            }
+            (cd "$recovery_backup_dir" && sha256sum --check --strict SHA256SUMS >/dev/null)
+            docker exec -i postgres-production pg_restore --list < "$recovery_backup_dir/dokilove_db.before-0027.dump" >/dev/null
+            printf 'migrated-unsealed|%s|%s|%s|%s\n' \
+              "$running_source_sha" "$running_digest" "$recovery_backup_dir" "$recovery_backup_sha"
+          else
+            echo "ERROR: partial/inconsistent NIMEI migration state: tables=$table_count constraints=$constraint_count recorded=$migration_recorded" >&2
+            exit 1
+          fi
+          REMOTE
+          )"
+
+          IFS='|' read -r state recovery_source_sha recovery_doki_digest recovery_backup_dir recovery_backup_sha <<< "$state_record"
+          case "$state" in
+            pending)
+              if [ "${{ needs.resolve-context.outputs.build_nimei }}" != "true" ]; then
+                echo "ERROR: migration 0027 is pending. First rollout must explicitly select components=nimei or components=all so DokiLove lockout, backup, migration, and NIMEI readiness remain one guarded transaction." >&2
+                exit 1
+              fi
+              {
+                echo "cutover_state=pending"
+                echo "cutover_required=true"
+                echo "marker_recovery_required=false"
+                echo "recovery_source_sha="
+                echo "recovery_doki_digest="
+                echo "recovery_backup_dir="
+                echo "recovery_backup_sha="
+              } >> "$GITHUB_OUTPUT"
+              ;;
+            migrated-unsealed)
+              if [ "${{ needs.resolve-context.outputs.build_nimei }}" != "true" ]; then
+                echo "ERROR: migration 0027 is unsealed. Retry with components=nimei or components=all to repair the marker and continue NIMEI." >&2
+                exit 1
+              fi
+              {
+                echo "cutover_state=migrated-unsealed"
+                echo "cutover_required=false"
+                echo "marker_recovery_required=true"
+                echo "recovery_source_sha=$recovery_source_sha"
+                echo "recovery_doki_digest=$recovery_doki_digest"
+                echo "recovery_backup_dir=$recovery_backup_dir"
+                echo "recovery_backup_sha=$recovery_backup_sha"
+              } >> "$GITHUB_OUTPUT"
+              ;;
+            sealed)
+              {
+                echo "cutover_state=sealed"
+                echo "cutover_required=false"
+                echo "marker_recovery_required=false"
+                echo "recovery_source_sha="
+                echo "recovery_doki_digest="
+                echo "recovery_backup_dir="
+                echo "recovery_backup_sha="
+              } >> "$GITHUB_OUTPUT"
+              ;;
+            *) echo "ERROR: unexpected cutover state: $state" >&2; exit 1 ;;
+          esac
+
+      - name: Validate DokiLove consumer lockout source
+        if: needs.resolve-context.outputs.build_web == 'true' || steps.inspect.outputs.cutover_required == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          boundary=apps/web/lib/auth-boundary.ts
+          route='apps/web/app/api/auth/[...all]/route.ts'
+          test -f "$boundary"
+          test -f "$route"
+          grep -Fq 'normalized === "/api/auth/sign-up/email"' "$boundary"
+          grep -Fq 'export function isPublicDokiAuthPath' "$boundary"
+          grep -Fq 'export function isBlockedDokiAuthPath' "$boundary"
+          grep -Fq '"/api/auth/change-password"' apps/web/lib/auth-boundary.test.ts
+          grep -Fq '"/api/auth/change-email"' apps/web/lib/auth-boundary.test.ts
+          grep -Fq '"/api/auth/passkey/generate-register-options"' apps/web/lib/auth-boundary.test.ts
+          grep -Fq 'isBlockedDokiAuthPath' "$route"
+          grep -Fq 'isPublicDokiAuthPath' "$route"
+          if [ -d apps/web/app/api/user ] || [ -d apps/web/app/api/chat ]; then
+            echo "ERROR: consumer write API trees still exist in DokiLove web" >&2
+            exit 1
+          fi
+
+      - name: Validate NIMEI database-backed readiness source
+        if: needs.resolve-context.outputs.build_nimei == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          route=apps/nimei-web/app/api/ready/route.ts
+          readiness=apps/nimei-web/app/api/ready/readiness.ts
+          test -f "$route"
+          test -f "$readiness"
+          grep -Fq 'NIMEI_MIGRATION_0027_CREATED_AT' "$route"
+          grep -Fq 'databaseIsReady' "$route"
+          grep -Fq "('nimei_user')" "$route"
+          grep -Fq "('chat_session')" "$route"
+          grep -Fq '1784106657989' "$readiness"
+
+  build-and-push:
+    needs: [resolve-context, inspect-nimei-cutover]
+    if: needs.resolve-context.outputs.is_deployable == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      app_sha: ${{ steps.app-sha.outputs.short_sha }}
+      source_sha: ${{ steps.app-sha.outputs.source_sha }}
+      sentry_release: ${{ steps.app-sha.outputs.source_sha }}
+      dokilove_image_ref: ${{ steps.push.outputs.dokilove_image_ref }}
+      dokilove_image_digest: ${{ steps.push.outputs.dokilove_image_digest }}
+      nimei_image_ref: ${{ steps.push.outputs.nimei_image_ref }}
+      nimei_image_digest: ${{ steps.push.outputs.nimei_image_digest }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/DokiLove
-          ref: ${{ needs.resolve-context.outputs.ref }}
+          ref: ${{ needs.resolve-context.outputs.source_sha }}
+          persist-credentials: false
 
       - name: Check Skip CI
+        env:
+          DEPLOY_MESSAGE: ${{ github.event.client_payload.message || '' }}
+        shell: bash
         run: |
-          if grep -q "noci" <<< "${{ github.event.client_payload.message || '' }}"; then
-            echo "跳过构建: commit message 包含 'noci'"
-            exit 78
+          if grep -q "noci" <<< "$DEPLOY_MESSAGE"; then
+            echo "ERROR: deploy workflows do not allow noci to skip a production image build" >&2
+            exit 1
           fi
 
       - name: Setup docker-compose
@@ -126,75 +518,145 @@ jobs:
 
       - name: Compute app SHA
         id: app-sha
-        run: echo "sha=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
+        env:
+          PINNED_SOURCE_SHA: ${{ needs.resolve-context.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          [ "$checked_out_sha" = "$PINNED_SOURCE_SHA" ] || {
+            echo "ERROR: build checkout does not match the pinned source SHA" >&2
+            exit 1
+          }
+          echo "short_sha=${PINNED_SOURCE_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$PINNED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Compute Sentry release
-        id: sentry
-        if: needs.resolve-context.outputs.build_web == 'true'
-        run: echo "release=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Validate Sentry auth token & DSN
-        if: needs.resolve-context.outputs.build_web == 'true'
+      - name: Validate telemetry configuration
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          NEXT_PUBLIC_SENTRY_DSN: https://ad95f8e28d800b13f55fa2e67e302cb9@sentry.leaperone.cn/7
+          DOKILOVE_POSTHOG_PROJECT_KEY: ${{ secrets.DOKILOVE_POSTHOG_PROJECT_KEY }}
+        shell: bash
         run: |
-          test -n "$SENTRY_AUTH_TOKEN" || { echo "SENTRY_AUTH_TOKEN required"; exit 1; }
-          if [[ "$NEXT_PUBLIC_SENTRY_DSN" == *"__DSN_PLACEHOLDER__"* ]]; then
-            echo "NEXT_PUBLIC_SENTRY_DSN still contains __DSN_PLACEHOLDER__"
-            exit 1
+          set -euo pipefail
+          EFFECTIVE_WEB="${{ needs.resolve-context.outputs.build_web }}"
+          if [ "${{ needs.inspect-nimei-cutover.outputs.cutover_required }}" = "true" ]; then
+            EFFECTIVE_WEB="true"
+          fi
+          if [ "$EFFECTIVE_WEB" = "true" ] || [ "${{ needs.resolve-context.outputs.build_nimei }}" = "true" ]; then
+            test -n "$SENTRY_AUTH_TOKEN" || { echo "SENTRY_AUTH_TOKEN required"; exit 1; }
+            test -n "$DOKILOVE_POSTHOG_PROJECT_KEY" || {
+              echo "DOKILOVE_POSTHOG_PROJECT_KEY required for shared PostHog project 419311" >&2
+              exit 1
+            }
+            [[ "$DOKILOVE_SENTRY_DSN" != *"__DSN_PLACEHOLDER__"* ]] || {
+              echo "DOKILOVE_SENTRY_DSN still contains __DSN_PLACEHOLDER__" >&2
+              exit 1
+            }
           fi
 
       - name: Build Docker images
         env:
-          NEXT_PUBLIC_SENTRY_DSN: https://ad95f8e28d800b13f55fa2e67e302cb9@sentry.leaperone.cn/7
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ secrets.DOKILOVE_POSTHOG_PROJECT_KEY }}
+          NEXT_PUBLIC_POSTHOG_HOST: https://t.doki.love
+          NEXT_PUBLIC_SENTRY_DSN: ${{ env.DOKILOVE_SENTRY_DSN }}
           NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
-          SENTRY_URL: https://sentry.leaperone.cn
-          SENTRY_ORG: leaperone
-          SENTRY_PROJECT: dokilove-web
-          SENTRY_RELEASE: dokilove-web@${{ steps.sentry.outputs.release }}
+          SENTRY_RELEASE: dokilove-web@${{ steps.app-sha.outputs.source_sha }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          NIMEI_NEXT_PUBLIC_SITE_URL: https://nimei.app
+          NEXT_PUBLIC_DOKILOVE_URL: https://doki.love
+          NIMEI_SENTRY_RELEASE: nimei-web@${{ steps.app-sha.outputs.source_sha }}
+        shell: bash
         run: |
-          BUILD_SERVICES=""
-          if [ "${{ needs.resolve-context.outputs.build_web }}" = "true" ]; then
-            BUILD_SERVICES="$BUILD_SERVICES dokilove-web"
+          set -euo pipefail
+          BUILD_SERVICES=()
+          EFFECTIVE_WEB="${{ needs.resolve-context.outputs.build_web }}"
+          if [ "${{ needs.inspect-nimei-cutover.outputs.cutover_required }}" = "true" ]; then
+            EFFECTIVE_WEB="true"
+          fi
+          if [ "$EFFECTIVE_WEB" = "true" ]; then
+            BUILD_SERVICES+=(dokilove-web)
+          fi
+          if [ "${{ needs.resolve-context.outputs.build_nimei }}" = "true" ]; then
+            BUILD_SERVICES+=(nimei-web)
           fi
           if [ "${{ needs.resolve-context.outputs.build_worker }}" = "true" ]; then
-            BUILD_SERVICES="$BUILD_SERVICES dokilove-worker"
+            BUILD_SERVICES+=(dokilove-worker)
           fi
           if [ "${{ needs.resolve-context.outputs.build_tgbot }}" = "true" ]; then
-            BUILD_SERVICES="$BUILD_SERVICES dokilove-tg-bot"
+            BUILD_SERVICES+=(dokilove-tg-bot)
           fi
-          if [ -z "${BUILD_SERVICES// }" ]; then
-            echo "No build services selected"
-            exit 0
-          fi
-          echo "Building services:$BUILD_SERVICES"
-          docker compose -f ./docker/docker-compose-build.yml build $BUILD_SERVICES
+          echo "Building services: ${BUILD_SERVICES[*]}"
+          docker compose -f ./docker/docker-compose-build.yml build "${BUILD_SERVICES[@]}"
 
-      - name: Extract sourcemaps from builder
-        if: needs.resolve-context.outputs.build_web == 'true'
+          SOURCE_SHA="${{ steps.app-sha.outputs.source_sha }}"
+          if [ "$EFFECTIVE_WEB" = "true" ]; then
+            docker tag \
+              registry.cn-hongkong.aliyuncs.com/leaperone/dokilove:latest \
+              "registry.cn-hongkong.aliyuncs.com/leaperone/dokilove:web-${SOURCE_SHA}"
+          fi
+          if [ "${{ needs.resolve-context.outputs.build_nimei }}" = "true" ]; then
+            docker tag \
+              registry.cn-hongkong.aliyuncs.com/leaperone/nimei:latest \
+              "registry.cn-hongkong.aliyuncs.com/leaperone/nimei:web-${SOURCE_SHA}"
+          fi
+
+      - name: Extract DokiLove sourcemaps
+        if: needs.resolve-context.outputs.build_web == 'true' || needs.inspect-nimei-cutover.outputs.cutover_required == 'true'
         env:
-          NEXT_PUBLIC_SENTRY_DSN: https://ad95f8e28d800b13f55fa2e67e302cb9@sentry.leaperone.cn/7
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ secrets.DOKILOVE_POSTHOG_PROJECT_KEY }}
+          NEXT_PUBLIC_POSTHOG_HOST: https://t.doki.love
+          NEXT_PUBLIC_SENTRY_DSN: ${{ env.DOKILOVE_SENTRY_DSN }}
           NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
-          SENTRY_RELEASE: dokilove-web@${{ steps.sentry.outputs.release }}
+          SENTRY_RELEASE: dokilove-web@${{ steps.app-sha.outputs.source_sha }}
+        shell: bash
         run: |
           DOCKER_BUILDKIT=1 docker build -f ./docker/Dockerfile --target sourcemaps \
+            --build-arg NEXT_PUBLIC_POSTHOG_KEY="$NEXT_PUBLIC_POSTHOG_KEY" \
+            --build-arg NEXT_PUBLIC_POSTHOG_HOST="$NEXT_PUBLIC_POSTHOG_HOST" \
             --build-arg NEXT_PUBLIC_SENTRY_DSN="$NEXT_PUBLIC_SENTRY_DSN" \
             --build-arg NEXT_PUBLIC_SENTRY_ENVIRONMENT="$NEXT_PUBLIC_SENTRY_ENVIRONMENT" \
             --build-arg SENTRY_RELEASE="$SENTRY_RELEASE" \
-            --progress=plain --output type=local,dest=$RUNNER_TEMP/sourcemaps .
+            --progress=plain --output type=local,dest="$RUNNER_TEMP/dokilove-sourcemaps" .
+          tar -cf "$RUNNER_TEMP/dokilove-sourcemaps.tar" -C "$RUNNER_TEMP/dokilove-sourcemaps" .
 
-      - name: Pack sourcemaps
-        if: needs.resolve-context.outputs.build_web == 'true'
-        run: tar -cf $RUNNER_TEMP/sourcemaps.tar -C $RUNNER_TEMP/sourcemaps .
-
-      - name: Upload sourcemaps artifact
-        if: needs.resolve-context.outputs.build_web == 'true'
+      - name: Upload DokiLove sourcemaps artifact
+        if: needs.resolve-context.outputs.build_web == 'true' || needs.inspect-nimei-cutover.outputs.cutover_required == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: dokilove-web-sourcemaps-${{ steps.app-sha.outputs.sha }}
-          path: ${{ runner.temp }}/sourcemaps.tar
+          name: dokilove-web-sourcemaps-${{ steps.app-sha.outputs.short_sha }}
+          path: ${{ runner.temp }}/dokilove-sourcemaps.tar
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Extract NIMEI sourcemaps
+        if: needs.resolve-context.outputs.build_nimei == 'true'
+        env:
+          NEXT_PUBLIC_SITE_URL: https://nimei.app
+          NEXT_PUBLIC_DOKILOVE_URL: https://doki.love
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ secrets.DOKILOVE_POSTHOG_PROJECT_KEY }}
+          NEXT_PUBLIC_POSTHOG_HOST: https://t.doki.love
+          NEXT_PUBLIC_SENTRY_DSN: ${{ env.DOKILOVE_SENTRY_DSN }}
+          NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+          SENTRY_RELEASE: nimei-web@${{ steps.app-sha.outputs.source_sha }}
+        shell: bash
+        run: |
+          DOCKER_BUILDKIT=1 docker build -f ./docker/Dockerfile.nimei-web --target sourcemaps \
+            --build-arg NEXT_PUBLIC_SITE_URL="$NEXT_PUBLIC_SITE_URL" \
+            --build-arg NEXT_PUBLIC_DOKILOVE_URL="$NEXT_PUBLIC_DOKILOVE_URL" \
+            --build-arg NEXT_PUBLIC_POSTHOG_KEY="$NEXT_PUBLIC_POSTHOG_KEY" \
+            --build-arg NEXT_PUBLIC_POSTHOG_HOST="$NEXT_PUBLIC_POSTHOG_HOST" \
+            --build-arg NEXT_PUBLIC_SENTRY_DSN="$NEXT_PUBLIC_SENTRY_DSN" \
+            --build-arg NEXT_PUBLIC_SENTRY_ENVIRONMENT="$NEXT_PUBLIC_SENTRY_ENVIRONMENT" \
+            --build-arg SENTRY_RELEASE="$SENTRY_RELEASE" \
+            --progress=plain --output type=local,dest="$RUNNER_TEMP/nimei-sourcemaps" .
+          tar -cf "$RUNNER_TEMP/nimei-sourcemaps.tar" -C "$RUNNER_TEMP/nimei-sourcemaps" .
+
+      - name: Upload NIMEI sourcemaps artifact
+        if: needs.resolve-context.outputs.build_nimei == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nimei-web-sourcemaps-${{ steps.app-sha.outputs.short_sha }}
+          path: ${{ runner.temp }}/nimei-sourcemaps.tar
           retention-days: 1
           if-no-files-found: error
 
@@ -206,114 +668,586 @@ jobs:
           password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
 
       - name: Push Docker images to Hong Kong registry
+        id: push
+        shell: bash
         run: |
-          HK_REGISTRY="registry.cn-hongkong.aliyuncs.com/leaperone/dokilove"
+          set -euo pipefail
+          SOURCE_SHA="${{ steps.app-sha.outputs.source_sha }}"
+          EFFECTIVE_WEB="${{ needs.resolve-context.outputs.build_web }}"
+          if [ "${{ needs.inspect-nimei-cutover.outputs.cutover_required }}" = "true" ]; then
+            EFFECTIVE_WEB="true"
+          fi
 
-          push_image() {
-            local tag="$1"
-            local hk_image="$HK_REGISTRY:$tag"
-            docker push "$hk_image"
+          if [ "$EFFECTIVE_WEB" = "true" ]; then
+            docker push registry.cn-hongkong.aliyuncs.com/leaperone/dokilove:latest
+          fi
+          if [ "${{ needs.resolve-context.outputs.build_nimei }}" = "true" ]; then
+            docker push registry.cn-hongkong.aliyuncs.com/leaperone/nimei:latest
+          fi
+          if [ "${{ needs.resolve-context.outputs.build_worker }}" = "true" ]; then
+            docker push registry.cn-hongkong.aliyuncs.com/leaperone/dokilove:worker-latest
+          fi
+          if [ "${{ needs.resolve-context.outputs.build_tgbot }}" = "true" ]; then
+            docker push registry.cn-hongkong.aliyuncs.com/leaperone/dokilove:tg-bot-latest
+          fi
+
+          push_with_digest() {
+            local image_ref="$1"
+            local push_output
+            local digest=""
+            local repository
+            push_output="$(docker push "$image_ref" 2>&1)"
+            printf '%s\n' "$push_output" >&2
+            digest="$(sed -nE 's/^.*digest: (sha256:[0-9a-f]{64}).*$/\1/p' <<< "$push_output" | tail -n 1)"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "ERROR: registry push did not report a valid manifest digest for $image_ref" >&2
+              return 1
+            }
+            repository="${image_ref%:*}"
+            docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image_ref" \
+              | grep -Fxq "${repository}@${digest}" || {
+                echo "ERROR: local pushed image RepoDigests do not contain ${repository}@${digest}" >&2
+                return 1
+              }
+            printf '%s\n' "$digest"
           }
 
-          if [ "${{ needs.resolve-context.outputs.build_web }}" = "true" ]; then
-            echo "Pushing web image..."
-            push_image "latest"
-          fi
+          {
+            if [ "$EFFECTIVE_WEB" = "true" ]; then
+              dokilove_ref="registry.cn-hongkong.aliyuncs.com/leaperone/dokilove:web-${SOURCE_SHA}"
+              dokilove_digest="$(push_with_digest "$dokilove_ref")"
+              echo "dokilove_image_ref=$dokilove_ref"
+              echo "dokilove_image_digest=$dokilove_digest"
+            else
+              echo "dokilove_image_ref="
+              echo "dokilove_image_digest="
+            fi
+            if [ "${{ needs.resolve-context.outputs.build_nimei }}" = "true" ]; then
+              nimei_ref="registry.cn-hongkong.aliyuncs.com/leaperone/nimei:web-${SOURCE_SHA}"
+              nimei_digest="$(push_with_digest "$nimei_ref")"
+              echo "nimei_image_ref=$nimei_ref"
+              echo "nimei_image_digest=$nimei_digest"
+            else
+              echo "nimei_image_ref="
+              echo "nimei_image_digest="
+            fi
+          } >> "$GITHUB_OUTPUT"
 
-          if [ "${{ needs.resolve-context.outputs.build_worker }}" = "true" ]; then
-            echo "Pushing worker image..."
-            push_image "worker-latest"
-          fi
-
-          if [ "${{ needs.resolve-context.outputs.build_tgbot }}" = "true" ]; then
-            echo "Pushing tg-bot image..."
-            push_image "tg-bot-latest"
-          fi
-
-  upload-sourcemaps:
-    needs: [resolve-context, build-and-push]
-    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.build_web == 'true'
+  upload-dokilove-sourcemaps:
+    needs: [resolve-context, inspect-nimei-cutover, build-and-push]
+    if: needs.resolve-context.outputs.build_web == 'true' || needs.inspect-nimei-cutover.outputs.cutover_required == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
       - name: Enable pnpm
         run: corepack enable && corepack prepare pnpm@latest --activate
-
-      - name: Download sourcemaps
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: dokilove-web-sourcemaps-${{ needs.build-and-push.outputs.app_sha }}
           path: ./sm-artifact
-
-      - name: Unpack
-        run: mkdir -p ./sourcemaps && tar -xf ./sm-artifact/sourcemaps.tar -C ./sourcemaps
-
-      - name: Upload to Sentry
+      - name: Upload to shared DokiLove Sentry project
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_URL: https://sentry.leaperone.cn
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: dokilove-web
           SENTRY_RELEASE: dokilove-web@${{ needs.build-and-push.outputs.sentry_release }}
+        shell: bash
         run: |
+          mkdir -p ./sourcemaps
+          tar -xf ./sm-artifact/dokilove-sourcemaps.tar -C ./sourcemaps
           pnpm dlx @sentry/cli@2.58.5 releases new "$SENTRY_RELEASE"
           pnpm dlx @sentry/cli@2.58.5 sourcemaps upload --release "$SENTRY_RELEASE" ./sourcemaps
           pnpm dlx @sentry/cli@2.58.5 releases finalize "$SENTRY_RELEASE"
 
-  migrate-production:
+  upload-nimei-sourcemaps:
     needs: [resolve-context, build-and-push]
-    if: needs.resolve-context.outputs.is_deployable == 'true'
+    if: needs.resolve-context.outputs.build_nimei == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Enable pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+      - uses: actions/download-artifact@v4
+        with:
+          name: nimei-web-sourcemaps-${{ needs.build-and-push.outputs.app_sha }}
+          path: ./sm-artifact
+      - name: Upload NIMEI release to shared DokiLove Sentry project
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_URL: https://sentry.leaperone.cn
+          SENTRY_ORG: leaperone
+          SENTRY_PROJECT: dokilove-web
+          SENTRY_RELEASE: nimei-web@${{ needs.build-and-push.outputs.sentry_release }}
+        shell: bash
+        run: |
+          mkdir -p ./sourcemaps
+          tar -xf ./sm-artifact/nimei-sourcemaps.tar -C ./sourcemaps
+          pnpm dlx @sentry/cli@2.58.5 releases new "$SENTRY_RELEASE"
+          pnpm dlx @sentry/cli@2.58.5 sourcemaps upload --release "$SENTRY_RELEASE" ./sourcemaps
+          pnpm dlx @sentry/cli@2.58.5 releases finalize "$SENTRY_RELEASE"
+
+  cutover-and-migrate-production:
+    needs: [resolve-context, inspect-nimei-cutover, build-and-push]
+    if: needs.resolve-context.outputs.is_deployable == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      backup_dir: ${{ steps.backup.outputs.backup_dir }}
+    steps:
+      - name: Checkout DokiLove source
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/DokiLove
-          ref: ${{ needs.resolve-context.outputs.ref }}
+          ref: ${{ needs.resolve-context.outputs.source_sha }}
+          persist-credentials: false
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Checkout release configuration
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: release-config
+          persist-credentials: false
+
+      - name: Verify migration checkout SHA
+        env:
+          PINNED_SOURCE_SHA: ${{ needs.resolve-context.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$PINNED_SOURCE_SHA" ] || {
+            echo "ERROR: migration checkout does not match the pinned source SHA" >&2
+            exit 1
+          }
+
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: Install pnpm
         run: corepack enable && corepack prepare pnpm@11.3.0 --activate
 
-      - name: Open DE Postgres SSH tunnel
+      - name: Configure DE SSH
         env:
           DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
           DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
           DE_APP_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
           DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+        shell: bash
         run: |
-          test -n "$DE_APP_HOST" || { echo "DE_APP_HOST required"; exit 1; }
-          test -n "$DE_APP_USERNAME" || { echo "DE_APP_USERNAME required"; exit 1; }
-          test -n "$DE_APP_SSH_KEY" || { echo "DE_APP_SSH_KEY required"; exit 1; }
+          set -euo pipefail
           install -m 700 -d ~/.ssh
           printf '%s\n' "$DE_APP_SSH_KEY" > ~/.ssh/de_app_key
           chmod 600 ~/.ssh/de_app_key
           ssh-keyscan -p "${DE_APP_PORT:-22}" "$DE_APP_HOST" >> ~/.ssh/known_hosts
-          ssh -fN \
-            -i ~/.ssh/de_app_key \
-            -p "${DE_APP_PORT:-22}" \
+
+      - name: Sync and validate NIMEI origin prerequisites
+        if: needs.resolve-context.outputs.build_nimei == 'true'
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote="${DE_APP_USERNAME}@${DE_APP_HOST}"
+          ssh_args=(-i ~/.ssh/de_app_key -p "${DE_APP_PORT:-22}")
+          ssh "${ssh_args[@]}" "$remote" "install -d -m 0755 /opt/apps/nimei/production"
+          tar -C release-config/compose/nimei -cf - . | \
+            ssh "${ssh_args[@]}" "$remote" "tar -C /opt/apps/nimei/production -xf -"
+          ssh "${ssh_args[@]}" "$remote" \
+            "chmod +x /opt/apps/nimei/production/preflight.sh /opt/apps/nimei/production/deploy-bluegreen.sh /opt/apps/nimei/production/install-nginx.sh && /opt/apps/nimei/production/preflight.sh"
+
+      - name: Recover migrated-but-unsealed cutover marker
+        if: needs.inspect-nimei-cutover.outputs.marker_recovery_required == 'true'
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+          RECOVERY_SOURCE_SHA: ${{ needs.inspect-nimei-cutover.outputs.recovery_source_sha }}
+          RECOVERY_DOKI_DIGEST: ${{ needs.inspect-nimei-cutover.outputs.recovery_doki_digest }}
+          RECOVERY_BACKUP_DIR: ${{ needs.inspect-nimei-cutover.outputs.recovery_backup_dir }}
+          RECOVERY_BACKUP_SHA: ${{ needs.inspect-nimei-cutover.outputs.recovery_backup_sha }}
+          NIMEI_SOURCE_SHA: ${{ needs.build-and-push.outputs.source_sha }}
+          NIMEI_IMAGE_REF: ${{ needs.build-and-push.outputs.nimei_image_ref }}
+          NIMEI_IMAGE_DIGEST: ${{ needs.build-and-push.outputs.nimei_image_digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/de_app_key -p "${DE_APP_PORT:-22}" \
+            "${DE_APP_USERNAME}@${DE_APP_HOST}" \
+            "RECOVERY_SOURCE_SHA='$RECOVERY_SOURCE_SHA' RECOVERY_DOKI_DIGEST='$RECOVERY_DOKI_DIGEST' RECOVERY_BACKUP_DIR='$RECOVERY_BACKUP_DIR' RECOVERY_BACKUP_SHA='$RECOVERY_BACKUP_SHA' NIMEI_SOURCE_SHA='$NIMEI_SOURCE_SHA' NIMEI_IMAGE_REF='$NIMEI_IMAGE_REF' NIMEI_IMAGE_DIGEST='$NIMEI_IMAGE_DIGEST' NIMEI_MIGRATION_CREATED_AT='$NIMEI_MIGRATION_CREATED_AT' bash -s" <<'REMOTE'
+          set -euo pipefail
+          [[ "$RECOVERY_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RECOVERY_DOKI_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$RECOVERY_BACKUP_SHA" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$NIMEI_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [ "$NIMEI_IMAGE_REF" = "registry.cn-hongkong.aliyuncs.com/leaperone/nimei:web-${NIMEI_SOURCE_SHA}" ]
+          [[ "$NIMEI_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          marker=/var/lib/dokilove/nimei-cutover-complete.json
+          [ ! -e "$marker" ] || { echo "ERROR: cutover marker appeared during recovery" >&2; exit 1; }
+
+          psqlq() {
+            docker exec postgres-production psql -X -v ON_ERROR_STOP=1 -U postgres -d dokilove_db -Atqc "$1"
+          }
+          [ "$(psqlq "select exists(select 1 from drizzle.__drizzle_migrations where created_at=${NIMEI_MIGRATION_CREATED_AT});")" = "t" ]
+          [ "$(psqlq 'select count(*) from "user" u left join nimei_user n on n.id=u.id where n.id is null;')" = "0" ]
+          [ "$(psqlq 'select count(*) from account a left join nimei_account n on n.id=a.id where n.id is null;')" = "0" ]
+          [ "$(psqlq "select count(*) from session s join \"user\" u on u.id=s.\"userId\" where coalesce(u.role,'user') <> 'admin';")" = "0" ]
+          [ "$(psqlq "select count(*) from card where \"uploaderId\" is not null and (visibility <> 'private' or \"distributionEligible\" is distinct from false);")" = "0" ]
+          [ "$(psqlq 'select count(*) from nimei_passkey;')" = "0" ]
+
+          [ "$(docker inspect --format '{{.State.Running}}' dokilove-web-production)" = "true" ]
+          [ "$(docker inspect --format '{{index .Config.Labels "com.leaperone.source-sha"}}' dokilove-web-production)" = "$RECOVERY_SOURCE_SHA" ]
+          [ "$(docker inspect --format '{{index .Config.Labels "com.leaperone.image-digest"}}' dokilove-web-production)" = "$RECOVERY_DOKI_DIGEST" ]
+          doki_repo_digest="registry.cn-hongkong.aliyuncs.com/leaperone/dokilove@${RECOVERY_DOKI_DIGEST}"
+          [ "$(docker inspect --format '{{.Config.Image}}' dokilove-web-production)" = "$doki_repo_digest" ]
+          container_image_id="$(docker inspect --format '{{.Image}}' dokilove-web-production)"
+          docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$container_image_id" | grep -Fxq "$doki_repo_digest"
+          [ "$(tr -d '\r\n' < "/var/lib/dokilove/consumer-lockout-images/${RECOVERY_SOURCE_SHA}")" = "$doki_repo_digest" ]
+
+          test -s "$RECOVERY_BACKUP_DIR/dokilove_db.before-0027.dump"
+          test -s "$RECOVERY_BACKUP_DIR/SHA256SUMS"
+          [ "$(cut -d' ' -f1 "$RECOVERY_BACKUP_DIR/SHA256SUMS")" = "$RECOVERY_BACKUP_SHA" ]
+          (cd "$RECOVERY_BACKUP_DIR" && sha256sum --check --strict SHA256SUMS >/dev/null)
+          docker exec -i postgres-production pg_restore --list < "$RECOVERY_BACKUP_DIR/dokilove_db.before-0027.dump" >/dev/null
+
+          assert_status() {
+            local expected="$1" method="$2" path="$3" status
+            if [ "$method" = POST ]; then
+              status="$(curl -sSk --max-time 8 -o /dev/null -w '%{http_code}' --resolve doki.love:443:127.0.0.1 \
+                -H 'Content-Type: application/json' -d '{}' "https://doki.love${path}")"
+            else
+              status="$(curl -sSk --max-time 8 -o /dev/null -w '%{http_code}' --resolve doki.love:443:127.0.0.1 \
+                "https://doki.love${path}")"
+            fi
+            [ "$status" = "$expected" ] || { echo "ERROR: recovery auth probe $path returned $status" >&2; exit 1; }
+          }
+          assert_not_blocked() {
+            local path="$1" status
+            status="$(curl -sSk --max-time 8 -o /dev/null -w '%{http_code}' --resolve doki.love:443:127.0.0.1 \
+              "https://doki.love${path}")"
+            [ "$status" != 403 ] && [ "$status" != 000 ] || { echo "ERROR: allowed auth probe $path is blocked" >&2; exit 1; }
+          }
+          assert_status 403 POST /api/auth/sign-up/email
+          assert_status 403 POST /api/auth/change-password
+          assert_status 403 GET /api/auth/passkey/generate-register-options
+          assert_not_blocked /api/auth/get-session
+          assert_not_blocked /api/auth/passkey/generate-authenticate-options
+
+          install -d -m 0700 /var/lib/dokilove
+          tmp="$(mktemp /var/lib/dokilove/.nimei-cutover.XXXXXX)"
+          printf '{"source_sha":"%s","backup_dir":"%s","backup_sha256":"%s","migration":"0027_nervous_captain_britain","dokilove_image_ref":"%s","dokilove_image_digest":"%s","nimei_source_sha":"%s","nimei_image_ref":"%s","nimei_image_digest":"%s","completed_at":"%s","recovered":true,"rollback_policy":"no-legacy-doki-consumer-image"}\n' \
+            "$RECOVERY_SOURCE_SHA" "$RECOVERY_BACKUP_DIR" "$RECOVERY_BACKUP_SHA" \
+            "registry.cn-hongkong.aliyuncs.com/leaperone/dokilove:web-${RECOVERY_SOURCE_SHA}" "$RECOVERY_DOKI_DIGEST" \
+            "$NIMEI_SOURCE_SHA" "$NIMEI_IMAGE_REF" "$NIMEI_IMAGE_DIGEST" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp"
+          chmod 0600 "$tmp"
+          mv -f "$tmp" "$marker"
+          rm -f /var/lib/dokilove/nimei-cutover-pending.env
+          REMOTE
+
+      - name: Switch DokiLove to consumer-lockout image before identity snapshot
+        if: needs.inspect-nimei-cutover.outputs.cutover_required == 'true'
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+          SOURCE_SHA: ${{ needs.build-and-push.outputs.source_sha }}
+          DOKI_IMAGE_REF: ${{ needs.build-and-push.outputs.dokilove_image_ref }}
+          DOKI_IMAGE_DIGEST: ${{ needs.build-and-push.outputs.dokilove_image_digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote="${DE_APP_USERNAME}@${DE_APP_HOST}"
+          ssh_args=(-i ~/.ssh/de_app_key -p "${DE_APP_PORT:-22}")
+          scp_args=(-i ~/.ssh/de_app_key -P "${DE_APP_PORT:-22}")
+          tool_dir="/opt/apps/dokilove/production/.release-tools/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-cutover"
+
+          # shellcheck disable=SC2029
+          ssh "${ssh_args[@]}" "$remote" \
+            "install -d -m 0755 /opt/apps/dokilove/production '$tool_dir'"
+          tar -C release-config/compose/dokilove -cf - . | \
+            ssh "${ssh_args[@]}" "$remote" "tar -C /opt/apps/dokilove/production -xf -"
+          scp "${scp_args[@]}" release-config/scripts/deploy.sh "$remote:$tool_dir/deploy.sh"
+
+          # shellcheck disable=SC2029
+          ssh "${ssh_args[@]}" "$remote" \
+            "SOURCE_SHA='$SOURCE_SHA' TOOL_DIR='$tool_dir' IMAGE_REF='$DOKI_IMAGE_REF' IMAGE_DIGEST='$DOKI_IMAGE_DIGEST' bash -s" <<'REMOTE'
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [ "$IMAGE_REF" = "registry.cn-hongkong.aliyuncs.com/leaperone/dokilove:web-${SOURCE_SHA}" ]
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          expected_repo_digest="${IMAGE_REF%:*}@${IMAGE_DIGEST}"
+          install -d -m 0700 /var/lib/dokilove/consumer-lockout-images
+          printf '%s\n' "$expected_repo_digest" > "/var/lib/dokilove/consumer-lockout-images/${SOURCE_SHA}"
+          chmod 0600 "/var/lib/dokilove/consumer-lockout-images/${SOURCE_SHA}"
+          chmod +x "$TOOL_DIR/deploy.sh"
+          trap 'rm -rf "$TOOL_DIR"' EXIT
+          export IMAGE_TAG="web-${SOURCE_SHA}"
+          export IMAGE_SOURCE_SHA="$SOURCE_SHA"
+          export IMAGE_DIGEST
+          export SENTRY_RELEASE="dokilove-web@${SOURCE_SHA}"
+          export DEPLOY_IMAGE_REF="$expected_repo_digest"
+          bash "$TOOL_DIR/deploy.sh" dokilove production
+
+          container_image_id="$(docker inspect --format '{{.Image}}' dokilove-web-production)"
+          if ! docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$container_image_id" \
+            | grep -Fxq "$expected_repo_digest"; then
+            echo "ERROR: DokiLove cutover container is not running $expected_repo_digest" >&2
+            exit 1
+          fi
+
+          health_ok=false
+          for _ in $(seq 1 30); do
+            if curl -fsSk --max-time 8 --resolve doki.love:443:127.0.0.1 \
+              https://doki.love/api/health >/dev/null; then
+              health_ok=true
+              break
+            fi
+            sleep 2
+          done
+          [ "$health_ok" = true ] || {
+            echo "ERROR: new DokiLove image is not healthy through Germany Nginx" >&2
+            exit 1
+          }
+
+          signup_status="$(curl -sSk --max-time 8 -o /dev/null -w '%{http_code}' \
+            --resolve doki.love:443:127.0.0.1 \
+            -H 'Content-Type: application/json' -d '{}' \
+            https://doki.love/api/auth/sign-up/email)"
+          [ "$signup_status" = "403" ] || {
+            echo "ERROR: DokiLove consumer registration is not locked out (HTTP $signup_status)" >&2
+            exit 1
+          }
+
+          change_password_status="$(curl -sSk --max-time 8 -o /dev/null -w '%{http_code}' \
+            --resolve doki.love:443:127.0.0.1 \
+            -H 'Content-Type: application/json' -d '{}' \
+            https://doki.love/api/auth/change-password)"
+          [ "$change_password_status" = "403" ] || {
+            echo "ERROR: DokiLove consumer password changes are not frozen (HTTP $change_password_status)" >&2
+            exit 1
+          }
+
+          register_passkey_status="$(curl -sSk --max-time 8 -o /dev/null -w '%{http_code}' \
+            --resolve doki.love:443:127.0.0.1 \
+            https://doki.love/api/auth/passkey/generate-register-options)"
+          [ "$register_passkey_status" = "403" ] || {
+            echo "ERROR: DokiLove consumer passkey registration is not frozen (HTTP $register_passkey_status)" >&2
+            exit 1
+          }
+
+          for allowed_path in \
+            /api/auth/get-session \
+            /api/auth/passkey/generate-authenticate-options; do
+            allowed_status="$(curl -sSk --max-time 8 -o /dev/null -w '%{http_code}' \
+              --resolve doki.love:443:127.0.0.1 "https://doki.love${allowed_path}")"
+            [ "$allowed_status" != "403" ] && [ "$allowed_status" != "000" ] || {
+              echo "ERROR: allowed DokiLove auth path $allowed_path is blocked/unreachable" >&2
+              exit 1
+            }
+          done
+          REMOTE
+
+      - name: Back up DE database before migration 0027
+        id: backup
+        if: needs.inspect-nimei-cutover.outputs.cutover_required == 'true'
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+          SOURCE_SHA: ${{ needs.build-and-push.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          backup_dir="$(ssh -i ~/.ssh/de_app_key -p "${DE_APP_PORT:-22}" \
+            "${DE_APP_USERNAME}@${DE_APP_HOST}" "SOURCE_SHA='$SOURCE_SHA' bash -s" <<'REMOTE'
+          set -euo pipefail
+          umask 077
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          dir="/opt/backups/dokilove-nimei-cutover/${stamp}"
+          dump="$dir/dokilove_db.before-0027.dump"
+          install -d -m 0700 "$dir"
+          docker exec postgres-production pg_dump \
+            -U postgres -d dokilove_db -Fc --no-owner --no-acl > "$dump"
+          test -s "$dump"
+          [ "$(stat -c '%s' "$dump")" -gt 1048576 ] || {
+            echo "ERROR: pre-0027 dump is unexpectedly small" >&2
+            exit 1
+          }
+          docker exec -i postgres-production pg_restore --list < "$dump" >/dev/null
+          (cd "$dir" && sha256sum "$(basename "$dump")" > SHA256SUMS)
+          printf 'source_sha=%s\ncreated_at=%s\n' \
+            "$SOURCE_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$dir/METADATA"
+          chmod 0600 "$dump" "$dir/SHA256SUMS" "$dir/METADATA"
+          printf '%s\n' "$dir"
+          REMOTE
+          )"
+          echo "backup_dir=$backup_dir" >> "$GITHUB_OUTPUT"
+          echo "Pre-migration backup: $backup_dir" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record pending cutover journal
+        if: needs.inspect-nimei-cutover.outputs.cutover_required == 'true'
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+          SOURCE_SHA: ${{ needs.build-and-push.outputs.source_sha }}
+          DOKI_IMAGE_REF: ${{ needs.build-and-push.outputs.dokilove_image_ref }}
+          DOKI_IMAGE_DIGEST: ${{ needs.build-and-push.outputs.dokilove_image_digest }}
+          NIMEI_IMAGE_REF: ${{ needs.build-and-push.outputs.nimei_image_ref }}
+          NIMEI_IMAGE_DIGEST: ${{ needs.build-and-push.outputs.nimei_image_digest }}
+          BACKUP_DIR: ${{ steps.backup.outputs.backup_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/de_app_key -p "${DE_APP_PORT:-22}" \
+            "${DE_APP_USERNAME}@${DE_APP_HOST}" \
+            "SOURCE_SHA='$SOURCE_SHA' DOKI_IMAGE_REF='$DOKI_IMAGE_REF' DOKI_IMAGE_DIGEST='$DOKI_IMAGE_DIGEST' NIMEI_IMAGE_REF='$NIMEI_IMAGE_REF' NIMEI_IMAGE_DIGEST='$NIMEI_IMAGE_DIGEST' BACKUP_DIR='$BACKUP_DIR' bash -s" <<'REMOTE'
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [ "$DOKI_IMAGE_REF" = "registry.cn-hongkong.aliyuncs.com/leaperone/dokilove:web-${SOURCE_SHA}" ]
+          [ "$NIMEI_IMAGE_REF" = "registry.cn-hongkong.aliyuncs.com/leaperone/nimei:web-${SOURCE_SHA}" ]
+          [[ "$DOKI_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$NIMEI_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test -s "$BACKUP_DIR/SHA256SUMS"
+          (cd "$BACKUP_DIR" && sha256sum --check --strict SHA256SUMS >/dev/null)
+          backup_sha="$(cut -d' ' -f1 "$BACKUP_DIR/SHA256SUMS")"
+          [[ "$backup_sha" =~ ^[0-9a-f]{64}$ ]]
+          pending=/var/lib/dokilove/nimei-cutover-pending.env
+          install -d -m 0700 /var/lib/dokilove
+          tmp="$(mktemp /var/lib/dokilove/.nimei-cutover-pending.XXXXXX)"
+          printf '%s\n' \
+            "source_sha=$SOURCE_SHA" \
+            "dokilove_image_ref=$DOKI_IMAGE_REF" \
+            "dokilove_image_digest=$DOKI_IMAGE_DIGEST" \
+            "nimei_image_ref=$NIMEI_IMAGE_REF" \
+            "nimei_image_digest=$NIMEI_IMAGE_DIGEST" \
+            "backup_dir=$BACKUP_DIR" \
+            "backup_sha256=$backup_sha" \
+            "created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp"
+          chmod 0600 "$tmp"
+          mv -f "$tmp" "$pending"
+          REMOTE
+
+      - name: Open DE Postgres SSH tunnel
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+        shell: bash
+        run: |
+          ssh -fN -i ~/.ssh/de_app_key -p "${DE_APP_PORT:-22}" \
             -o ExitOnForwardFailure=yes \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=3 \
             -L 127.0.0.1:15432:127.0.0.1:5432 \
             "${DE_APP_USERNAME}@${DE_APP_HOST}"
 
-      - name: Run Database Migrations
+      - name: Run shared database migrations
+        env:
+          DATABASE_URL: ${{ secrets.DOKILOVE_DATABASE_URL }}
+        shell: bash
         run: |
-          pnpm install --filter @dokilove/web
-          DATABASE_URL="${{ secrets.DOKILOVE_DATABASE_URL }}" pnpm --filter @dokilove/web db:migrate
+          set -euo pipefail
+          pnpm install --frozen-lockfile --filter @dokilove/db
+          pnpm --filter @dokilove/db db:migrate
+
+      - name: Verify NIMEI identity migration
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+          CUTOVER_REQUIRED: ${{ needs.inspect-nimei-cutover.outputs.cutover_required }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/de_app_key -p "${DE_APP_PORT:-22}" \
+            "${DE_APP_USERNAME}@${DE_APP_HOST}" \
+            "NIMEI_MIGRATION_CREATED_AT='$NIMEI_MIGRATION_CREATED_AT' CUTOVER_REQUIRED='$CUTOVER_REQUIRED' bash -s" <<'REMOTE'
+          set -euo pipefail
+          psqlq() {
+            docker exec postgres-production psql -X -v ON_ERROR_STOP=1 \
+              -U postgres -d dokilove_db -Atqc "$1"
+          }
+          missing_users="$(psqlq 'select count(*) from "user" u left join nimei_user n on n.id=u.id where n.id is null;')"
+          missing_accounts="$(psqlq 'select count(*) from account a left join nimei_account n on n.id=a.id where n.id is null;')"
+          legacy_consumer_sessions="$(psqlq "select count(*) from session s join \"user\" u on u.id=s.\"userId\" where coalesce(u.role,'user') <> 'admin';")"
+          leaked_uploaded_cards="$(psqlq "select count(*) from card where \"uploaderId\" is not null and (visibility <> 'private' or \"distributionEligible\" is distinct from false);")"
+          [ "$missing_users" = "0" ] || { echo "ERROR: $missing_users users missing from NIMEI snapshot" >&2; exit 1; }
+          [ "$missing_accounts" = "0" ] || { echo "ERROR: $missing_accounts accounts missing from NIMEI snapshot" >&2; exit 1; }
+          [ "$legacy_consumer_sessions" = "0" ] || { echo "ERROR: $legacy_consumer_sessions legacy consumer sessions remain in DokiLove" >&2; exit 1; }
+          [ "$leaked_uploaded_cards" = "0" ] || { echo "ERROR: $leaked_uploaded_cards uploaded cards remain public/distributable" >&2; exit 1; }
+          if [ "$CUTOVER_REQUIRED" = "true" ]; then
+            legacy_passkeys="$(psqlq 'select count(*) from passkey;')"
+            nimei_passkeys="$(psqlq 'select count(*) from nimei_passkey;')"
+            [ "$nimei_passkeys" = "0" ] || {
+              echo "ERROR: NIMEI passkey table must start empty; Doki WebAuthn credentials are RP-bound and cannot be copied" >&2
+              exit 1
+            }
+            echo "Legacy Doki passkeys retained (not copied to nimei.app): $legacy_passkeys"
+          fi
+          recorded="$(psqlq "select exists(select 1 from drizzle.__drizzle_migrations where created_at=${NIMEI_MIGRATION_CREATED_AT});")"
+          [ "$recorded" = "t" ] || { echo "ERROR: migration 0027 is not recorded" >&2; exit 1; }
+          REMOTE
+
+          if [ "$CUTOVER_REQUIRED" = "true" ]; then
+            legacy_passkey_count="$(ssh -i ~/.ssh/de_app_key -p "${DE_APP_PORT:-22}" \
+              "${DE_APP_USERNAME}@${DE_APP_HOST}" \
+              "docker exec postgres-production psql -X -U postgres -d dokilove_db -Atqc 'select count(*) from passkey;'")"
+            echo "Legacy Doki passkeys retained for audit (not copied across RP ID): $legacy_passkey_count" \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Seal irreversible DokiLove to NIMEI cutover
+        if: needs.inspect-nimei-cutover.outputs.cutover_required == 'true'
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+          SOURCE_SHA: ${{ needs.build-and-push.outputs.source_sha }}
+          BACKUP_DIR: ${{ steps.backup.outputs.backup_dir }}
+          DOKI_IMAGE_REF: ${{ needs.build-and-push.outputs.dokilove_image_ref }}
+          DOKI_IMAGE_DIGEST: ${{ needs.build-and-push.outputs.dokilove_image_digest }}
+          NIMEI_IMAGE_REF: ${{ needs.build-and-push.outputs.nimei_image_ref }}
+          NIMEI_IMAGE_DIGEST: ${{ needs.build-and-push.outputs.nimei_image_digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/de_app_key -p "${DE_APP_PORT:-22}" \
+            "${DE_APP_USERNAME}@${DE_APP_HOST}" \
+            "SOURCE_SHA='$SOURCE_SHA' BACKUP_DIR='$BACKUP_DIR' DOKI_IMAGE_REF='$DOKI_IMAGE_REF' DOKI_IMAGE_DIGEST='$DOKI_IMAGE_DIGEST' NIMEI_IMAGE_REF='$NIMEI_IMAGE_REF' NIMEI_IMAGE_DIGEST='$NIMEI_IMAGE_DIGEST' bash -s" <<'REMOTE'
+          set -euo pipefail
+          marker=/var/lib/dokilove/nimei-cutover-complete.json
+          sha_file="$BACKUP_DIR/SHA256SUMS"
+          test -s "$sha_file"
+          backup_sha="$(cut -d' ' -f1 "$sha_file")"
+          [[ "$backup_sha" =~ ^[0-9a-f]{64}$ ]]
+          (cd "$BACKUP_DIR" && sha256sum --check --strict SHA256SUMS >/dev/null)
+          docker exec -i postgres-production pg_restore --list < "$BACKUP_DIR/dokilove_db.before-0027.dump" >/dev/null
+          [ "$DOKI_IMAGE_REF" = "registry.cn-hongkong.aliyuncs.com/leaperone/dokilove:web-${SOURCE_SHA}" ]
+          [ "$NIMEI_IMAGE_REF" = "registry.cn-hongkong.aliyuncs.com/leaperone/nimei:web-${SOURCE_SHA}" ]
+          [[ "$DOKI_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$NIMEI_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [ "$(tr -d '\r\n' < "/var/lib/dokilove/consumer-lockout-images/${SOURCE_SHA}")" = \
+            "registry.cn-hongkong.aliyuncs.com/leaperone/dokilove@${DOKI_IMAGE_DIGEST}" ]
+          install -d -m 0700 /var/lib/dokilove
+          tmp="$(mktemp /var/lib/dokilove/.nimei-cutover.XXXXXX)"
+          printf '{"source_sha":"%s","backup_dir":"%s","backup_sha256":"%s","migration":"0027_nervous_captain_britain","dokilove_image_ref":"%s","dokilove_image_digest":"%s","nimei_source_sha":"%s","nimei_image_ref":"%s","nimei_image_digest":"%s","completed_at":"%s","recovered":false,"rollback_policy":"no-legacy-doki-consumer-image"}\n' \
+            "$SOURCE_SHA" "$BACKUP_DIR" "$backup_sha" "$DOKI_IMAGE_REF" "$DOKI_IMAGE_DIGEST" \
+            "$SOURCE_SHA" "$NIMEI_IMAGE_REF" "$NIMEI_IMAGE_DIGEST" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp"
+          chmod 0600 "$tmp"
+          mv -f "$tmp" "$marker"
+          rm -f /var/lib/dokilove/nimei-cutover-pending.env
+          REMOTE
 
   deploy-de-web:
-    needs: [resolve-context, migrate-production]
-    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_de == 'true' && needs.resolve-context.outputs.build_web == 'true'
+    needs: [resolve-context, inspect-nimei-cutover, build-and-push, cutover-and-migrate-production]
+    if: needs.resolve-context.outputs.build_web == 'true' && needs.inspect-nimei-cutover.outputs.cutover_required != 'true'
     concurrency:
       group: dokilove-de-deploy-web
       cancel-in-progress: false
@@ -321,11 +1255,30 @@ jobs:
     with:
       project: dokilove
       env: production
+      image_source_sha: ${{ needs.build-and-push.outputs.source_sha }}
+      image_ref: ${{ needs.build-and-push.outputs.dokilove_image_ref }}
+      image_digest: ${{ needs.build-and-push.outputs.dokilove_image_digest }}
+      safety_attestation: doki-consumer-lockout-v1
+    secrets: inherit
+
+  deploy-de-nimei:
+    needs: [resolve-context, build-and-push, cutover-and-migrate-production]
+    if: needs.resolve-context.outputs.build_nimei == 'true'
+    concurrency:
+      group: nimei-de-deploy-web
+      cancel-in-progress: false
+    uses: ./.github/workflows/deploy-de.yml
+    with:
+      project: nimei
+      env: production
+      image_source_sha: ${{ needs.build-and-push.outputs.source_sha }}
+      image_ref: ${{ needs.build-and-push.outputs.nimei_image_ref }}
+      image_digest: ${{ needs.build-and-push.outputs.nimei_image_digest }}
     secrets: inherit
 
   deploy-de-worker:
-    needs: [resolve-context, migrate-production]
-    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_de == 'true' && needs.resolve-context.outputs.build_worker == 'true'
+    needs: [resolve-context, cutover-and-migrate-production]
+    if: needs.resolve-context.outputs.build_worker == 'true'
     concurrency:
       group: dokilove-de-deploy-worker
       cancel-in-progress: false
@@ -336,8 +1289,8 @@ jobs:
     secrets: inherit
 
   deploy-de-tgbot:
-    needs: [resolve-context, migrate-production]
-    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_de == 'true' && needs.resolve-context.outputs.build_tgbot == 'true'
+    needs: [resolve-context, cutover-and-migrate-production]
+    if: needs.resolve-context.outputs.build_tgbot == 'true'
     concurrency:
       group: dokilove-de-deploy-tgbot
       cancel-in-progress: false
