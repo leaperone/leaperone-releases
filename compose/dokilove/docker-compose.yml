@@ -2,7 +2,7 @@ name: dokilove-${DEPLOY_ENV:-production}
 
 services:
   web:
-    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/dokilove:${IMAGE_TAG:-latest}
+    image: ${DEPLOY_IMAGE_REF:-${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/dokilove:${IMAGE_TAG:-latest}}
     container_name: dokilove-web-${DEPLOY_ENV:-production}
     env_file:
       - .env
@@ -29,6 +29,9 @@ services:
       JP_OSS_REGION: ${JP_OSS_REGION:-garage}
       JP_OSS_MAX_BYTES: ${JP_OSS_MAX_BYTES:-10485760}
       JP_OSS_SOURCE_ALLOWLIST: ${JP_OSS_SOURCE_ALLOWLIST}
+    labels:
+      com.leaperone.source-sha: ${IMAGE_SOURCE_SHA:-}
+      com.leaperone.image-digest: ${IMAGE_DIGEST:-}
     networks:
       - leaperone-prod
     restart: unless-stopped
