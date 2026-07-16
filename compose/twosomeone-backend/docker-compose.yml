@@ -26,7 +26,7 @@ services:
     # 给足停机宽限,避免蓝绿停旧色时 Docker 默认 ~10s SIGKILL 打断在途 worker。
     stop_grace_period: 110s
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3001/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3001/ready"]
       interval: 30s
       timeout: 5s
       retries: 3
