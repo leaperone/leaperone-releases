@@ -18,6 +18,7 @@ concurrency:
 env:
   DOKILOVE_SENTRY_DSN: https://ad95f8e28d800b13f55fa2e67e302cb9@sentry.leaperone.cn/7
   NIMEI_MIGRATION_CREATED_AT: "1784106657989"
+  NIMEI_READINESS_MIGRATION_CREATED_AT: "1784173566751"
 
 jobs:
   resolve-context:
@@ -474,11 +475,13 @@ jobs:
           readiness=apps/nimei-web/app/api/ready/readiness.ts
           test -f "$route"
           test -f "$readiness"
-          grep -Fq 'NIMEI_MIGRATION_0027_CREATED_AT' "$route"
+          grep -Fq 'NIMEI_MIGRATION_0028_CREATED_AT' "$route"
           grep -Fq 'databaseIsReady' "$route"
           grep -Fq "('nimei_user')" "$route"
+          grep -Fq "('nimei_audit_log')" "$route"
+          grep -Fq "('nimei_user', 'role')" "$route"
           grep -Fq "('chat_session')" "$route"
-          grep -Fq '1784106657989' "$readiness"
+          grep -Fq "$NIMEI_READINESS_MIGRATION_CREATED_AT" "$readiness"
 
   build-and-push:
     needs: [resolve-context, inspect-nimei-cutover]
