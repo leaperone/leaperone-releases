@@ -12,7 +12,7 @@
 #  - preflight：起 idle 前校验 backend.2some.ren.conf 与内部监听 conf 都已指
 #    twosomeone_backend_active 且无残留 127.0.0.1:3003/3013,否则 abort。
 #  - fail-closed 解析 active 端口：upstream 必须恰好一行 server 127.0.0.1:<port> 且 ∈ {3003,3013}。
-#  - 切流原子化 + 切后经 nginx 端到端复验 backend.2some.ren /health,失败回滚保留旧色。
+#  - 切流原子化 + 切后经 nginx 端到端复验 backend.2some.ren /ready,失败回滚保留旧色。
 #  - 停旧色按 compose project / legacy 容器名(不靠 docker --filter publish)。
 #  - WS 长连接在切流停旧色时断开,客户端自动重连到新色(PG LISTEN/NOTIFY 跨实例投递,无 sticky)。
 #
@@ -30,8 +30,8 @@ ACTIVE_CONF=/etc/nginx/sites-enabled/00-twosomeone-backend-upstream.conf
 LEGACY_NAME=twosomeone-backend-production
 BLUE_PORT=3003
 GREEN_PORT=3013
-# backend /health 是轻量 liveness(返回 {ok:true}),与镜像 docker HEALTHCHECK 同端点。
-HEALTH_PATH=/health
+# /ready 同时检查 runtime、消息总线和数据库，避免未就绪实例接流量。
+READY_PATH=/ready
 HEALTH_RETRIES=30
 HEALTH_INTERVAL=2
 OBSERVE_SECONDS=10
@@ -61,7 +61,7 @@ probe() {
 
 probe_via_nginx() {
   local host="$1"
-  curl -fsS --max-time 8 --resolve "${host}:443:127.0.0.1" "https://${host}${HEALTH_PATH}" >/dev/null 2>&1
+  curl -fsS --max-time 8 --resolve "${host}:443:127.0.0.1" "https://${host}${READY_PATH}" >/dev/null 2>&1
 }
 
 cd "$PROJECT_DIR"
@@ -101,7 +101,7 @@ COLOR="$idle_color" BACKEND_PORT="$idle_port" \
 # 3. 探 idle 后端健康
 ok=0
 for _ in $(seq 1 "$HEALTH_RETRIES"); do
-  if probe "http://127.0.0.1:${idle_port}${HEALTH_PATH}"; then ok=1; break; fi
+  if probe "http://127.0.0.1:${idle_port}${READY_PATH}"; then ok=1; break; fi
   sleep "$HEALTH_INTERVAL"
 done
 if [ "$ok" != 1 ]; then
@@ -111,7 +111,7 @@ if [ "$ok" != 1 ]; then
 fi
 echo "==> idle ${idle_color}:${idle_port} healthy"
 
-# 3b. 校验 idle 色能经 WEB_BASE_URL 反调 web(/health 不碰 WEB_BASE_URL,光探它会漏掉
+# 3b. 校验 idle 色能经 WEB_BASE_URL 反调 web(/ready 不碰 WEB_BASE_URL,光探它会漏掉
 #     backend→web 断裂:stale env / :3031 监听坏 / web upstream 异常)。从 idle 容器内打
 #     $WEB_BASE_URL/api/internal/(带斜杠,匹配监听 location)。任何 HTTP 码(401/404/405…)
 #     都=链路通(env→:3031→web upstream→web);000/空=不通,切流前就 abort、不停旧色。
@@ -140,10 +140,10 @@ if ! nginx -s reload; then
 fi
 echo "==> switched active → ${idle_color}:${idle_port}"
 
-# 5. 切完端到端复验(经 nginx 探 backend.2some.ren /health);失败回滚到旧端口、保留旧色、abort
+# 5. 切完端到端复验(经 nginx 探 backend.2some.ren /ready);失败回滚到旧端口、保留旧色、abort
 sleep "$OBSERVE_SECONDS"
 verify_ok=1
-if ! probe "http://127.0.0.1:${idle_port}${HEALTH_PATH}"; then
+if ! probe "http://127.0.0.1:${idle_port}${READY_PATH}"; then
   echo "ERROR: idle backend ${idle_port} unhealthy after switch." >&2; verify_ok=0
 fi
 for host in "${PUBLIC_HOSTS[@]}"; do
@@ -187,4 +187,4 @@ fi
 docker image prune -f >/dev/null 2>&1 || true
 
 echo "==> deploy complete: active=${idle_color}:${idle_port}; old (:${current_port}) stopped (kept for rollback)"
-echo "    rollback: docker (compose) start 旧色/${LEGACY_NAME} → 探 :${current_port}/health → sed upstream 端口改回 ${current_port} → nginx -t && nginx -s reload"
+echo "    rollback: docker (compose) start 旧色/${LEGACY_NAME} → 探 :${current_port}/ready（旧镜像无该路由时用 /health）→ sed upstream 端口改回 ${current_port} → nginx -t && nginx -s reload"
