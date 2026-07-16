@@ -24,6 +24,10 @@ require_text 'DOKILOVE_POSTHOG_PROJECT_KEY' "$WORKFLOW"
 require_text 'NEXT_PUBLIC_POSTHOG_HOST: https://t.doki.love' "$WORKFLOW"
 require_text 'SENTRY_PROJECT: dokilove-web' "$WORKFLOW"
 require_text 'SENTRY_RELEASE: nimei-web@' "$WORKFLOW"
+require_text 'NIMEI_READINESS_MIGRATION_CREATED_AT: "1784173566751"' "$WORKFLOW"
+require_text 'NIMEI_MIGRATION_0028_CREATED_AT' "$WORKFLOW"
+require_text "('nimei_audit_log')" "$WORKFLOW"
+require_text "('nimei_user', 'role')" "$WORKFLOW"
 require_text 'Back up DE database before migration 0027' "$WORKFLOW"
 require_text 'https://doki.love/api/auth/sign-up/email' "$WORKFLOW"
 require_text 'nimei-cutover-complete.json' "$WORKFLOW"
@@ -49,6 +53,11 @@ require_text 'NIMEI ENCRYPTION_KEY must match DokiLove' "$ROOT/compose/nimei/pre
 require_text 'NIMEI SENTRY_DSN must match DokiLove' "$ROOT/compose/nimei/preflight.sh"
 require_text 'TRUSTED_PROXY must be 1' "$ROOT/compose/nimei/preflight.sh"
 require_text 'NIMEI deploy requires digest-pinned DEPLOY_IMAGE_REF' "$ROOT/compose/nimei/deploy-bluegreen.sh"
+
+if grep -Fq 'NIMEI_MIGRATION_0027_CREATED_AT' "$WORKFLOW"; then
+  echo "ERROR: NIMEI readiness validation still targets migration 0027" >&2
+  exit 1
+fi
 
 if grep -qE 'NIMEI_NEXT_PUBLIC_(POSTHOG|SENTRY)' "$WORKFLOW"; then
   echo "ERROR: NIMEI must use the shared NEXT_PUBLIC_POSTHOG/SENTRY build contract" >&2
