@@ -11,9 +11,9 @@
   (host → 容器 3001)。`stop_grace_period: 110s` 配合 backend ~100s 优雅停机(worker 抽干)。
 - `deploy-bluegreen.sh`:随 compose 一起 scp;通用 `deploy.sh` 探测到它可执行即委派。
   流程:flock(backend 专用锁)→ preflight(backend.2some.ren.conf + 10-twosomeone-internal.conf
-  均已指 `twosomeone_backend_active` 且无残留直连)→ 起空闲色 → 探 `/health` → **校验空闲色经
-  `WEB_BASE_URL` 反调 web 可达**(光探 /health 漏不掉 backend→web 断裂)→ 原子切 nginx upstream
-  → 切后经 nginx 复验 `backend.2some.ren/health` → 失败回滚保留旧色 → 按 compose project 停旧色
+  均已指 `twosomeone_backend_active` 且无残留直连)→ 起空闲色 → 探 `/ready` → **校验空闲色经
+  `WEB_BASE_URL` 反调 web 可达**(`/ready` 不覆盖 backend→web 反调链路)→ 原子切 nginx upstream
+  → 切后经 nginx 复验 `backend.2some.ren/ready` → 失败回滚保留旧色 → 按 compose project 停旧色
   (`-t 110` 给足优雅停机)。
 - WS 长连接在停旧色时断开,客户端自动重连到新色(PG LISTEN/NOTIFY 跨实例投递,无 sticky 需求)。
 
@@ -46,7 +46,8 @@ web↔backend 内部调用此前绕过 nginx、写死 host 端口(`host.docker.i
 ## 回滚
 
 先 `docker compose -p twosomeone-backend-<旧色> start`(首迁:`docker start twosomeone-backend-production`)→
-探 `:<旧端口>/health` → sed `00-twosomeone-backend-upstream.conf` 端口改回 → `nginx -t && nginx -s reload`。
+探 `:<旧端口>/ready`（旧镜像没有该路由时用 `/health`）→ sed `00-twosomeone-backend-upstream.conf`
+端口改回 → `nginx -t && nginx -s reload`。
 旧色停止后保留未删。脚本切后复验失败会自动回滚。
 
 ## 注意
