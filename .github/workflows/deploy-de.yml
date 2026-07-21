@@ -1,0 +1,219 @@
+name: Deploy to DE
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        required: true
+        type: string
+        description: "Project name matching compose/<project>/"
+      env:
+        required: true
+        type: string
+        description: "Deploy environment (production / beta)"
+      components:
+        required: false
+        type: string
+        default: ""
+        description: "Optional comma-separated component intent for component-aware deploy scripts"
+      image_source_sha:
+        required: false
+        type: string
+        default: ""
+        description: "Optional full source SHA used for project-specific immutable image tags"
+      image_ref:
+        required: false
+        type: string
+        default: ""
+        description: "Expected immutable registry image reference for deployment verification"
+      image_digest:
+        required: false
+        type: string
+        default: ""
+        description: "Expected registry manifest digest for deployment verification"
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout deployment configs
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Sync compose directory to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DE_APP_HOST }}
+          username: ${{ secrets.DE_APP_USERNAME }}
+          key: ${{ secrets.DE_APP_SSH_KEY }}
+          port: ${{ secrets.DE_APP_PORT }}
+          source: "compose/${{ inputs.project }}/*"
+          target: "${{ secrets.APP_DEPLOY_ROOT }}/${{ inputs.project }}/${{ inputs.env }}"
+          strip_components: 2
+          overwrite: true
+
+      - name: Sync repository deployment script to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DE_APP_HOST }}
+          username: ${{ secrets.DE_APP_USERNAME }}
+          key: ${{ secrets.DE_APP_SSH_KEY }}
+          port: ${{ secrets.DE_APP_PORT }}
+          source: "scripts/deploy.sh"
+          target: "${{ secrets.APP_DEPLOY_ROOT }}/${{ inputs.project }}/${{ inputs.env }}/.release-tools/${{ github.run_id }}-${{ github.run_attempt }}"
+          strip_components: 1
+          overwrite: true
+
+      - name: Deploy
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          DEPLOY_COMPONENTS: ${{ inputs.components }}
+          IMAGE_SOURCE_SHA: ${{ inputs.image_source_sha }}
+          IMAGE_REF: ${{ inputs.image_ref }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          RELEASES_SHA: ${{ github.sha }}
+          APP_DEPLOY_ROOT: ${{ secrets.APP_DEPLOY_ROOT }}
+          DEPLOY_STATE_ROOT: ${{ secrets.DEPLOY_STATE_ROOT }}
+          ALIPAY_CERT_HOST_DIR: ${{ secrets.ALIPAY_CERT_HOST_DIR }}
+        with:
+          host: ${{ secrets.DE_APP_HOST }}
+          username: ${{ secrets.DE_APP_USERNAME }}
+          key: ${{ secrets.DE_APP_SSH_KEY }}
+          port: ${{ secrets.DE_APP_PORT }}
+          command_timeout: 20m
+          envs: DEPLOY_COMPONENTS,IMAGE_SOURCE_SHA,IMAGE_REF,IMAGE_DIGEST,RELEASES_SHA,APP_DEPLOY_ROOT,DEPLOY_STATE_ROOT,ALIPAY_CERT_HOST_DIR
+          script: |
+            set -euo pipefail
+            : "${APP_DEPLOY_ROOT:?missing APP_DEPLOY_ROOT secret}"
+            : "${DEPLOY_STATE_ROOT:?missing DEPLOY_STATE_ROOT secret}"
+            APP_DIR="${APP_DEPLOY_ROOT}/${{ inputs.project }}/${{ inputs.env }}"
+            TOOL_DIR="${APP_DIR}/.release-tools/${{ github.run_id }}-${{ github.run_attempt }}"
+            trap 'rm -rf "$TOOL_DIR"' EXIT
+            IMAGE_SOURCE_SHA="${IMAGE_SOURCE_SHA:-}"
+            IMAGE_REF="${IMAGE_REF:-}"
+            IMAGE_DIGEST="${IMAGE_DIGEST:-}"
+            RELEASES_SHA="${RELEASES_SHA:-}"
+            COMPONENT=""
+            CONTAINER_NAME=""
+            EXPECTED_IMAGE_REF=""
+            EXPECTED_REPO_DIGEST=""
+
+            case "${{ inputs.project }}" in
+              leaperone|leaperone-www|leaperone-dashboard)
+                if [ "${#IMAGE_SOURCE_SHA}" -ne 40 ] || [[ "$IMAGE_SOURCE_SHA" == *[!0-9a-f]* ]]; then
+                  echo "ERROR: ${{ inputs.project }} deploy requires a full lowercase Git source SHA" >&2
+                  exit 1
+                fi
+                ;;
+            esac
+
+            case "${{ inputs.project }}" in
+              leaperone)
+                [[ "$RELEASES_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+                  echo "ERROR: invalid releases repository SHA" >&2
+                  exit 1
+                }
+                export API_IMAGE_TAG="api-${IMAGE_SOURCE_SHA}"
+                ;;
+              leaperone-www)
+                COMPONENT="www"
+                CONTAINER_NAME="leaperone-www-production"
+                EXPECTED_IMAGE_REF="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:www-${IMAGE_SOURCE_SHA}"
+                export WWW_IMAGE_TAG="www-${IMAGE_SOURCE_SHA}"
+                export WWW_IMAGE_DIGEST="$IMAGE_DIGEST"
+                ;;
+              leaperone-dashboard)
+                COMPONENT="dashboard"
+                CONTAINER_NAME="leaperone-dashboard-production"
+                EXPECTED_IMAGE_REF="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:dashboard-${IMAGE_SOURCE_SHA}"
+                export DASHBOARD_IMAGE_TAG="dashboard-${IMAGE_SOURCE_SHA}"
+                export DASHBOARD_IMAGE_DIGEST="$IMAGE_DIGEST"
+                ;;
+            esac
+
+            if [ -n "$EXPECTED_IMAGE_REF" ]; then
+              [ "$IMAGE_REF" = "$EXPECTED_IMAGE_REF" ] || {
+                echo "ERROR: unexpected immutable image ref: $IMAGE_REF" >&2
+                exit 1
+              }
+              [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+                echo "ERROR: invalid expected image digest" >&2
+                exit 1
+              }
+              [[ "$RELEASES_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+                echo "ERROR: invalid releases repository SHA" >&2
+                exit 1
+              }
+              IMAGE_REPOSITORY="${IMAGE_REF%:*}"
+              EXPECTED_REPO_DIGEST="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+              export IMAGE_REF IMAGE_DIGEST IMAGE_SOURCE_SHA
+              export DEPLOY_IMAGE_REF="$EXPECTED_REPO_DIGEST"
+            fi
+
+            if [ "${{ inputs.project }}" = "leaperone" ]; then
+              # scp overwrite does not delete files removed from the repository.
+              # Retire legacy routing payloads before the generic deployer can
+              # see them, preserving a root-only, checksummed audit copy.
+              RETIRED_DIR="${DEPLOY_STATE_ROOT}/retired-release-payloads"
+              RETIRE_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+              RETIRE_RECORD="${RETIRED_DIR}/retirements.jsonl"
+              install -d -m 0700 "$RETIRED_DIR"
+              if [ ! -f "$RETIRE_RECORD" ]; then
+                install -m 0600 /dev/null "$RETIRE_RECORD"
+              fi
+              chmod 0600 "$RETIRE_RECORD"
+
+              retire_legacy_payload() {
+                local source="$1"
+                local label="$2"
+                local backup
+                local digest
+                [ -f "$source" ] || return 0
+                backup="${RETIRED_DIR}/${label}.${RELEASES_SHA}.${RETIRE_STAMP}"
+                install -m 0600 "$source" "$backup"
+                digest="$(sha256sum "$backup" | cut -d' ' -f1)"
+                rm -f "$source"
+                printf '{"source":"%s","backup":"%s","sha256":"%s","releases_sha":"%s","retired_at":"%s"}\n' \
+                  "$source" "$backup" "$digest" "$RELEASES_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                  >> "$RETIRE_RECORD"
+                echo "Retired stale LEAPERone payload: $source"
+              }
+
+              retire_legacy_payload \
+                "$APP_DIR/scripts/10-install-nginx-conf.sh" \
+                "legacy-install-nginx-conf.sh"
+              retire_legacy_payload \
+                "$APP_DIR/nginx/leaperone-local.conf" \
+                "legacy-leaperone-local.conf"
+              rmdir "$APP_DIR/scripts" "$APP_DIR/nginx" 2>/dev/null || true
+            fi
+
+            bash "$TOOL_DIR/deploy.sh" "${{ inputs.project }}" "${{ inputs.env }}"
+
+            if [ -n "$CONTAINER_NAME" ]; then
+              CONTAINER_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$CONTAINER_NAME")"
+              if ! docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$CONTAINER_IMAGE_ID" \
+                | grep -Fxq "$EXPECTED_REPO_DIGEST"; then
+                echo "ERROR: $CONTAINER_NAME is not running expected RepoDigest $EXPECTED_REPO_DIGEST" >&2
+                exit 1
+              fi
+            fi
+
+            [ -n "$COMPONENT" ] || exit 0
+
+            RECORD_DIR="${DEPLOY_STATE_ROOT}/deployments"
+            RECORD_FILE="${RECORD_DIR}/frontend-deployments.jsonl"
+            DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            MIGRATION_EVIDENCE=none
+            exec 8>/run/lock/leaperone-deployment-record.lock
+            flock -x 8
+            install -d -m 0700 "$RECORD_DIR"
+            if [ ! -f "$RECORD_FILE" ]; then
+              install -m 0600 /dev/null "$RECORD_FILE"
+            fi
+            chmod 0600 "$RECORD_FILE"
+            printf '{"component":"%s","source_sha":"%s","releases_sha":"%s","image_ref":"%s","image_digest":"%s","deployed_at":"%s","migration":"%s"}\n' \
+              "$COMPONENT" "$IMAGE_SOURCE_SHA" "$RELEASES_SHA" "$IMAGE_REF" "$IMAGE_DIGEST" "$DEPLOYED_AT" "$MIGRATION_EVIDENCE" \
+              >> "$RECORD_FILE"
+            echo "Deployment evidence appended to $RECORD_FILE"

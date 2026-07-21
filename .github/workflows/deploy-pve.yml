@@ -1,0 +1,47 @@
+name: Deploy to PVE
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        required: true
+        type: string
+        description: "Project name matching compose/<project>/"
+      env:
+        required: true
+        type: string
+        description: "Deploy environment (production / beta)"
+      internal:
+        required: false
+        type: boolean
+        default: false
+        description: 'When true, use PVE_APP_HOST_INTERNAL/PVE_APP_PORT_INTERNAL secrets (PVE LAN). When false (default), use PVE_APP_HOST/PVE_APP_PORT (public).'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout deployment configs
+        uses: actions/checkout@v6
+
+      - name: Sync compose directory to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ inputs.internal && secrets.PVE_APP_HOST_INTERNAL || secrets.PVE_APP_HOST }}
+          username: ${{ secrets.PVE_APP_USERNAME }}
+          key: ${{ secrets.PVE_APP_SSH_KEY }}
+          port: ${{ inputs.internal && secrets.PVE_APP_PORT_INTERNAL || secrets.PVE_APP_PORT }}
+          source: "compose/${{ inputs.project }}/*"
+          target: "${{ secrets.APP_DEPLOY_ROOT }}/${{ inputs.project }}/${{ inputs.env }}"
+          strip_components: 2
+          overwrite: true
+
+      - name: Deploy
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ inputs.internal && secrets.PVE_APP_HOST_INTERNAL || secrets.PVE_APP_HOST }}
+          username: ${{ secrets.PVE_APP_USERNAME }}
+          key: ${{ secrets.PVE_APP_SSH_KEY }}
+          port: ${{ inputs.internal && secrets.PVE_APP_PORT_INTERNAL || secrets.PVE_APP_PORT }}
+          command_timeout: 20m
+          script: ${{ secrets.APP_DEPLOY_ROOT }}/bin/deploy.sh ${{ inputs.project }} ${{ inputs.env }}

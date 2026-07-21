@@ -1,0 +1,25 @@
+name: leaperone-dashboard-${DEPLOY_ENV:-production}
+
+# Root .env is compose-only. Runtime variables belong in .env.dashboard.
+services:
+  dashboard:
+    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/leaperone:${DASHBOARD_IMAGE_TAG:?DASHBOARD_IMAGE_TAG must be an immutable dashboard source-SHA tag}@${DASHBOARD_IMAGE_DIGEST:?DASHBOARD_IMAGE_DIGEST must be the expected registry manifest digest}
+    container_name: leaperone-dashboard-${DEPLOY_ENV:-production}
+    env_file:
+      - .env.dashboard
+    volumes:
+      - type: bind
+        source: ${ALIPAY_CERT_HOST_DIR:?ALIPAY_CERT_HOST_DIR must be supplied at deployment time}
+        target: /app/alipay-cert
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-9821}:3000"
+    networks:
+      - leaperone-prod
+    restart: unless-stopped
+
+networks:
+  leaperone-prod:
+    external: true

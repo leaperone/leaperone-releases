@@ -1,0 +1,355 @@
+name: Deploy MultiPost
+run-name: >-
+  🚀 Deploy MultiPost · ${{ github.event.client_payload.env || inputs.env || 'production' }} · ${{ github.event.client_payload.message || inputs.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || inputs.env || 'production' }}]
+
+on:
+  repository_dispatch:
+    types: [deploy-multipost]
+
+jobs:
+  resolve-context:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      is_deployable: ${{ steps.resolve.outputs.is_deployable }}
+      deploy_env: ${{ steps.resolve.outputs.deploy_env }}
+      deploy_de: ${{ steps.resolve.outputs.deploy_de }}
+      components: ${{ steps.resolve.outputs.components }}
+      build_web: ${{ steps.resolve.outputs.build_web }}
+      build_backend: ${{ steps.resolve.outputs.build_backend }}
+      build_video_stt: ${{ steps.resolve.outputs.build_video_stt }}
+    steps:
+      - name: Resolve deploy context
+        id: resolve
+        run: |
+          REF="${{ github.event.client_payload.ref }}"
+          ENV_INPUT="${{ github.event.client_payload.env }}"
+          COMPONENTS="${{ github.event.client_payload.components || github.event.client_payload.build_targets }}"
+
+          DEPLOY_ENV="production"
+          IS_DEPLOYABLE="true"
+          DEPLOY_DE="true"
+
+          if [ -z "$COMPONENTS" ]; then
+            if [[ "$REF" =~ ^(refs/tags/)?worker-v ]]; then
+              COMPONENTS="video-stt-worker"
+            else
+              COMPONENTS="web,backend"
+            fi
+          fi
+
+          BUILD_WEB="false"
+          BUILD_BACKEND="false"
+          BUILD_VIDEO_STT="false"
+
+          IFS=',' read -ra COMPONENT_LIST <<< "$COMPONENTS"
+          for component in "${COMPONENT_LIST[@]}"; do
+            component="${component//[[:space:]]/}"
+            case "$component" in
+              web)
+                BUILD_WEB="true"
+                ;;
+              backend)
+                BUILD_BACKEND="true"
+                ;;
+              video-stt-worker)
+                BUILD_VIDEO_STT="true"
+                ;;
+              all)
+                BUILD_WEB="true"
+                BUILD_BACKEND="true"
+                BUILD_VIDEO_STT="true"
+                ;;
+              "")
+                ;;
+              *)
+                echo "ERROR: unknown MultiPost component: $component" >&2
+                exit 1
+                ;;
+            esac
+          done
+          if [ "$BUILD_WEB" = "false" ] && [ "$BUILD_BACKEND" = "false" ] && [ "$BUILD_VIDEO_STT" = "false" ]; then
+            echo "ERROR: no MultiPost components selected from: $COMPONENTS" >&2
+            exit 1
+          fi
+
+          if [ "$ENV_INPUT" != "" ] && [ "$ENV_INPUT" != "$DEPLOY_ENV" ]; then
+            echo "ERROR: deploy-multipost only supports env=production, got: $ENV_INPUT" >&2
+            exit 1
+          fi
+
+          if [ -z "$REF" ]; then
+            RESOLVED_REF="main"
+            echo "使用默认分支: main (ref 为空)"
+          elif [[ "$REF" == "main" ]] || [[ "$REF" == "refs/heads/main" ]]; then
+            RESOLVED_REF="$REF"
+            echo "使用 main 分支: $REF"
+          elif [[ "$REF" =~ ^([0-9]+)/merge ]] || [[ "$REF" == *"/merge"* ]]; then
+            echo "ERROR: deploy-multipost is deploy-only. PR merge refs are handled by verify-pr-multipost. Got ref: $REF" >&2
+            exit 1
+          elif [[ "$REF" =~ ^(web-|worker-)?v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
+            RESOLVED_REF="$REF"
+            echo "检测到 tag: $REF，将执行部署"
+          else
+            echo "ERROR: deploy-multipost only accepts deployable refs (main or release tags). Got ref: $REF" >&2
+            exit 1
+          fi
+
+          echo "ref=$RESOLVED_REF" >> "$GITHUB_OUTPUT"
+          echo "pr_number=" >> "$GITHUB_OUTPUT"
+          echo "is_deployable=$IS_DEPLOYABLE" >> "$GITHUB_OUTPUT"
+          echo "deploy_env=$DEPLOY_ENV" >> "$GITHUB_OUTPUT"
+          echo "deploy_de=$DEPLOY_DE" >> "$GITHUB_OUTPUT"
+          echo "components=$COMPONENTS" >> "$GITHUB_OUTPUT"
+          echo "build_web=$BUILD_WEB" >> "$GITHUB_OUTPUT"
+          echo "build_backend=$BUILD_BACKEND" >> "$GITHUB_OUTPUT"
+          echo "build_video_stt=$BUILD_VIDEO_STT" >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    needs: resolve-context
+    if: needs.resolve-context.outputs.is_deployable == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      app_sha: ${{ steps.app-sha.outputs.sha }}
+      sentry_release: ${{ steps.sentry.outputs.release }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/MultiPost
+          ref: ${{ needs.resolve-context.outputs.ref }}
+
+      - name: Check Skip CI
+        run: |
+          if grep -q "noci" <<< "${{ github.event.client_payload.message || '' }}"; then
+            echo "跳过构建: commit message 包含 'noci'"
+            exit 78
+          fi
+
+      - name: Setup docker-compose
+        uses: KengoTODA/actions-setup-docker-compose@v1
+        with:
+          version: '2.14.2'
+
+      - name: Compute app SHA
+        id: app-sha
+        run: echo "sha=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Compute Sentry release
+        id: sentry
+        if: needs.resolve-context.outputs.build_web == 'true'
+        run: echo "release=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Validate Sentry auth token
+        if: needs.resolve-context.outputs.build_web == 'true'
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: test -n "$SENTRY_AUTH_TOKEN" || { echo "SENTRY_AUTH_TOKEN required"; exit 1; }
+
+      - name: Build Docker images
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_MULTIPOST_ENV_ID: ${{ secrets.POSTHOG_MULTIPOST_ENV_ID }}
+          NEXT_PUBLIC_POSTHOG_KEY: phc_szGHmzMPL2vkmxOkrB120T4pSqq5WJWZdALmf1KCzdi
+          NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.one
+          NEXT_PUBLIC_SENTRY_DSN: https://422fa55253c74dc835e207a204dc2d16@sentry.leaperone.cn/6
+          NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${{ needs.resolve-context.outputs.deploy_env }}
+          SENTRY_URL: https://sentry.leaperone.cn
+          SENTRY_ORG: leaperone
+          SENTRY_PROJECT: multipost-web
+          SENTRY_RELEASE: multipost-web@${{ steps.sentry.outputs.release }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          BUILD_SERVICES=""
+          if [ "${{ needs.resolve-context.outputs.build_web }}" = "true" ]; then
+            BUILD_SERVICES="$BUILD_SERVICES multipost"
+          fi
+          if [ "${{ needs.resolve-context.outputs.build_backend }}" = "true" ]; then
+            BUILD_SERVICES="$BUILD_SERVICES multipost-backend"
+          fi
+          if [ "${{ needs.resolve-context.outputs.build_video_stt }}" = "true" ]; then
+            BUILD_SERVICES="$BUILD_SERVICES video-stt-worker"
+          fi
+          echo "Building services:$BUILD_SERVICES"
+          docker compose -f ./docker/docker-compose-build.yml build $BUILD_SERVICES
+
+      - name: Extract sourcemaps from builder
+        if: needs.resolve-context.outputs.build_web == 'true'
+        env:
+          NEXT_PUBLIC_SENTRY_DSN: https://422fa55253c74dc835e207a204dc2d16@sentry.leaperone.cn/6
+          NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${{ needs.resolve-context.outputs.deploy_env }}
+          SENTRY_URL: https://sentry.leaperone.cn
+          SENTRY_ORG: leaperone
+          SENTRY_PROJECT: multipost-web
+          SENTRY_RELEASE: multipost-web@${{ steps.sentry.outputs.release }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_MULTIPOST_ENV_ID: ${{ secrets.POSTHOG_MULTIPOST_ENV_ID }}
+          NEXT_PUBLIC_POSTHOG_KEY: phc_szGHmzMPL2vkmxOkrB120T4pSqq5WJWZdALmf1KCzdi
+          NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.one
+        run: |
+          printf '%s' "$SENTRY_AUTH_TOKEN" > /tmp/sentry_auth_token
+          DOCKER_BUILDKIT=1 docker build \
+            -f ./docker/Dockerfile \
+            --target sourcemaps \
+            --build-arg NEXT_PUBLIC_SENTRY_DSN="$NEXT_PUBLIC_SENTRY_DSN" \
+            --build-arg NEXT_PUBLIC_SENTRY_ENVIRONMENT="$NEXT_PUBLIC_SENTRY_ENVIRONMENT" \
+            --build-arg SENTRY_URL="$SENTRY_URL" \
+            --build-arg SENTRY_ORG="$SENTRY_ORG" \
+            --build-arg SENTRY_PROJECT="$SENTRY_PROJECT" \
+            --build-arg SENTRY_RELEASE="$SENTRY_RELEASE" \
+            --build-arg POSTHOG_API_KEY="$POSTHOG_API_KEY" \
+            --build-arg POSTHOG_MULTIPOST_ENV_ID="$POSTHOG_MULTIPOST_ENV_ID" \
+            --build-arg NEXT_PUBLIC_POSTHOG_KEY="$NEXT_PUBLIC_POSTHOG_KEY" \
+            --build-arg NEXT_PUBLIC_POSTHOG_HOST="$NEXT_PUBLIC_POSTHOG_HOST" \
+            --secret id=sentry_auth_token,src=/tmp/sentry_auth_token \
+            --progress=plain \
+            --output type=local,dest=$RUNNER_TEMP/sourcemaps \
+            .
+
+      - name: Pack sourcemaps
+        if: needs.resolve-context.outputs.build_web == 'true'
+        run: tar -cf $RUNNER_TEMP/sourcemaps.tar -C $RUNNER_TEMP/sourcemaps .
+
+      - name: Upload sourcemaps artifact
+        if: needs.resolve-context.outputs.build_web == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: multipost-web-sourcemaps-${{ steps.app-sha.outputs.sha }}
+          path: ${{ runner.temp }}/sourcemaps.tar
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Login to Aliyun Docker Registry (Hong Kong)
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-hongkong.aliyuncs.com
+          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+
+      - name: Push Docker images to Hong Kong registry
+        run: |
+          HK_REGISTRY="registry.cn-hongkong.aliyuncs.com/leaperone/multipost"
+
+          push_image() {
+            local tag="$1"
+            local hk_image="$HK_REGISTRY:$tag"
+            docker push "$hk_image"
+          }
+
+          if [ "${{ needs.resolve-context.outputs.build_web }}" = "true" ]; then
+            echo "Pushing web image..."
+            push_image "latest"
+          fi
+
+          if [ "${{ needs.resolve-context.outputs.build_backend }}" = "true" ]; then
+            echo "Pushing backend image..."
+            push_image "backend-latest"
+          fi
+
+          if [ "${{ needs.resolve-context.outputs.build_video_stt }}" = "true" ]; then
+            echo "Pushing video-stt-worker image..."
+            push_image "video-stt-worker-latest"
+          fi
+
+  upload-sourcemaps:
+    needs: [resolve-context, build-and-push]
+    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.build_web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Enable pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - name: Download sourcemaps
+        uses: actions/download-artifact@v4
+        with:
+          name: multipost-web-sourcemaps-${{ needs.build-and-push.outputs.app_sha }}
+          path: ./sm-artifact
+
+      - name: Unpack
+        run: mkdir -p ./sourcemaps && tar -xf ./sm-artifact/sourcemaps.tar -C ./sourcemaps
+
+      - name: Upload to Sentry
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_URL: https://sentry.leaperone.cn
+          SENTRY_ORG: leaperone
+          SENTRY_PROJECT: multipost-web
+          SENTRY_RELEASE: multipost-web@${{ needs.build-and-push.outputs.sentry_release }}
+        run: |
+          pnpm dlx @sentry/cli@2.58.5 releases new "$SENTRY_RELEASE"
+          pnpm dlx @sentry/cli@2.58.5 sourcemaps upload --release "$SENTRY_RELEASE" ./sourcemaps
+          pnpm dlx @sentry/cli@2.58.5 releases finalize "$SENTRY_RELEASE"
+
+  migrate-production:
+    needs: [resolve-context, build-and-push]
+    if: needs.resolve-context.outputs.is_deployable == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/MultiPost
+          ref: ${{ needs.resolve-context.outputs.ref }}
+
+      - name: Install Atlas Community
+        run: |
+          curl -fsSL https://release.ariga.io/atlas/atlas-community-linux-amd64-v1.2.2 -o /tmp/atlas
+          printf '%s  %s\n' 'a38e34e886cd0b9d2d625fe0046fed107785b1562bd2d07dbd96fadfc57dec62' /tmp/atlas | sha256sum -c -
+          chmod +x /tmp/atlas
+          sudo mv /tmp/atlas /usr/local/bin/atlas
+
+      - name: Open DE Postgres SSH tunnel
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+        run: |
+          test -n "$DE_APP_HOST" || { echo "DE_APP_HOST required"; exit 1; }
+          test -n "$DE_APP_USERNAME" || { echo "DE_APP_USERNAME required"; exit 1; }
+          test -n "$DE_APP_SSH_KEY" || { echo "DE_APP_SSH_KEY required"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DE_APP_SSH_KEY" > ~/.ssh/de_app_key
+          chmod 600 ~/.ssh/de_app_key
+          ssh-keyscan -p "${DE_APP_PORT:-22}" "$DE_APP_HOST" >> ~/.ssh/known_hosts
+          ssh -fN \
+            -i ~/.ssh/de_app_key \
+            -p "${DE_APP_PORT:-22}" \
+            -o ExitOnForwardFailure=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=3 \
+            -L 127.0.0.1:15432:127.0.0.1:5432 \
+            "${DE_APP_USERNAME}@${DE_APP_HOST}"
+
+      - name: Run database migrations (Atlas)
+        env:
+          MULTIPOST_DATABASE_URL: ${{ secrets.MULTIPOST_DATABASE_URL }}
+        run: |
+          # Strip Prisma-specific query params (schema=, pgbouncer=, ...) that
+          # libpq/Atlas rejects; the same URL shape also serves the app runtime.
+          MULTIPOST_DATABASE_URL="$(printf '%s' "$MULTIPOST_DATABASE_URL" | sed -E '
+            s/([?&])(schema|pgbouncer|connection_limit|pool_timeout|connect_timeout|socket_timeout|statement_cache_size|TimeZone)=[^&]*/\1/g
+            s/&&+/\&/g
+            s/\?&/?/
+            s/[?&]+$//
+          ')"
+          export MULTIPOST_DATABASE_URL
+          atlas migrate apply --env production --config file://db/atlas/atlas.hcl
+
+  deploy-de:
+    needs: [resolve-context, migrate-production]
+    if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_de == 'true'
+    uses: ./.github/workflows/deploy-de.yml
+    with:
+      project: multipost
+      env: production
+      components: ${{ needs.resolve-context.outputs.components }}
+    secrets: inherit
