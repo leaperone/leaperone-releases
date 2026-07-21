@@ -1,0 +1,106 @@
+name: Deploy Undersky Scraper
+
+on:
+  repository_dispatch:
+    types: [deploy-undersky-scraper]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.set-ref.outputs.pr_number }}
+      is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
+
+    steps:
+      - name: Validate and set ref
+        id: set-ref
+        run: |
+          REF="${{ github.event.client_payload.ref }}"
+          if [ -z "$REF" ]; then
+            echo "ref=main" >> $GITHUB_OUTPUT
+            echo "pr_number=" >> $GITHUB_OUTPUT
+            echo "is_deployable=true" >> $GITHUB_OUTPUT
+            echo "使用默认分支: main (ref 为空)"
+          elif [[ "$REF" == "main" ]] || [[ "$REF" == "refs/heads/main" ]]; then
+            echo "ref=$REF" >> $GITHUB_OUTPUT
+            echo "pr_number=" >> $GITHUB_OUTPUT
+            echo "is_deployable=true" >> $GITHUB_OUTPUT
+            echo "使用 main 分支: $REF"
+          elif [[ "$REF" =~ ^([0-9]+)/merge ]]; then
+            # 提取 PR 号，使用 PR 的 merge ref
+            PR_NUMBER="${BASH_REMATCH[1]}"
+            echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
+            echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+            echo "is_deployable=false" >> $GITHUB_OUTPUT
+            echo "检测到 PR merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
+          elif [[ "$REF" == *"/merge"* ]]; then
+            # 其他 merge 格式，尝试提取 PR 号
+            PR_NUMBER=$(echo "$REF" | grep -oE '[0-9]+' | head -1)
+            if [ -n "$PR_NUMBER" ]; then
+              echo "ref=refs/pull/${PR_NUMBER}/merge" >> $GITHUB_OUTPUT
+              echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+              echo "is_deployable=false" >> $GITHUB_OUTPUT
+              echo "检测到 merge ref，使用 PR #${PR_NUMBER} 的 merge ref"
+            else
+              echo "ref=main" >> $GITHUB_OUTPUT
+              echo "pr_number=" >> $GITHUB_OUTPUT
+              echo "is_deployable=true" >> $GITHUB_OUTPUT
+              echo "无法提取 PR 号，使用默认分支: main (原始 ref: $REF)"
+            fi
+          elif [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
+            # Tag 格式，标记为需要部署
+            echo "ref=$REF" >> $GITHUB_OUTPUT
+            echo "pr_number=" >> $GITHUB_OUTPUT
+            echo "is_deployable=true" >> $GITHUB_OUTPUT
+            echo "检测到 tag: $REF，将执行部署"
+          else
+            echo "ref=$REF" >> $GITHUB_OUTPUT
+            echo "pr_number=" >> $GITHUB_OUTPUT
+            echo "is_deployable=false" >> $GITHUB_OUTPUT
+            echo "使用指定 ref: $REF"
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/UnderSky-Scraper
+          ref: ${{ steps.set-ref.outputs.ref }}
+
+      - name: Check Skip CI
+        run: |
+          if grep -q "noci" <<< "${{ github.event.client_payload.message || '' }}"; then
+            echo "跳过构建: commit message 包含 'noci'"
+            exit 78
+          fi
+
+      - name: Setup docker-compose
+        uses: KengoTODA/actions-setup-docker-compose@v1
+        with:
+          version: '2.14.2'
+
+      - name: Build Docker images
+        run: docker compose -f ./docker/docker-compose-build.yml build
+
+      - name: Login to Aliyun Docker Registry
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-hongkong.aliyuncs.com
+          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+
+      - name: Tag and Push Docker images
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        run: |
+          docker push registry.cn-hongkong.aliyuncs.com/leaperone/undersky-scraper:latest
+
+      - name: Deploy to Production
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.ALIYUN_HK_HOST }}
+          username: ${{ secrets.ALIYUN_CN_USERNAME }}
+          port: ${{ secrets.ALIYUN_CN_PORT }}
+          key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+          script: ${{ secrets.DEPLOY_UNDERSKY_SCRIPT }}

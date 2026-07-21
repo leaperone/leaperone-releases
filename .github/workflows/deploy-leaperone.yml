@@ -1,0 +1,216 @@
+name: Deploy LEAPERone API
+run-name: >-
+  🚀 Deploy LEAPERone API · ${{ github.event.client_payload.env || 'production' }} · ${{ github.event.client_payload.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || 'production' }}]
+
+on:
+  repository_dispatch:
+    types: [deploy-leaperone]
+
+concurrency:
+  # API releases target one production container. WWW and Dashboard have
+  # separate routing-free workflows and must never be started here.
+  group: deploy-leaperone-api-production
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.set-ref.outputs.pr_number }}
+      is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
+      components: ${{ steps.set-ref.outputs.components }}
+      source_sha: ${{ steps.source.outputs.sha }}
+
+    steps:
+      - name: Validate and set ref
+        id: set-ref
+        run: |
+          REF="${{ github.event.client_payload.ref }}"
+          COMPONENTS="${{ github.event.client_payload.components || github.event.client_payload.build_targets }}"
+          if [ -z "$COMPONENTS" ]; then
+            COMPONENTS="api"
+          fi
+          DEPLOY_API="false"
+          IFS=',' read -ra COMPONENT_LIST <<< "$COMPONENTS"
+          for component in "${COMPONENT_LIST[@]}"; do
+            component="${component//[[:space:]]/}"
+            case "$component" in
+              api)
+                DEPLOY_API="true"
+                ;;
+              "")
+                ;;
+              web|all)
+                echo "ERROR: the legacy Web is retired; deploy WWW/Dashboard with their dedicated workflows" >&2
+                exit 1
+                ;;
+              *)
+                echo "ERROR: unknown LEAPERone component: $component" >&2
+                exit 1
+                ;;
+            esac
+          done
+          if [ "$DEPLOY_API" != "true" ]; then
+            echo "ERROR: deploy-leaperone is API-only; use components=api" >&2
+            exit 1
+          fi
+          echo "components=api" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$REF" ]; then
+            echo "ref=main" >> $GITHUB_OUTPUT
+            echo "pr_number=" >> $GITHUB_OUTPUT
+            echo "is_deployable=true" >> $GITHUB_OUTPUT
+            echo "使用默认分支: main (ref 为空)"
+          elif [[ "$REF" == "main" ]] || [[ "$REF" == "refs/heads/main" ]]; then
+            echo "ref=$REF" >> $GITHUB_OUTPUT
+            echo "pr_number=" >> $GITHUB_OUTPUT
+            echo "is_deployable=true" >> $GITHUB_OUTPUT
+            echo "使用 main 分支: $REF"
+          elif [[ "$REF" =~ ^([0-9]+)/merge ]] || [[ "$REF" == *"/merge"* ]]; then
+            echo "ERROR: deploy-leaperone is deploy-only and does not accept PR merge refs. Got ref: $REF" >&2
+            exit 1
+          elif [[ "$REF" =~ ^api-v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/api-v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            # API release tag.
+            echo "ref=$REF" >> $GITHUB_OUTPUT
+            echo "pr_number=" >> $GITHUB_OUTPUT
+            echo "is_deployable=true" >> $GITHUB_OUTPUT
+            echo "检测到 tag: $REF，将执行部署"
+          else
+            echo "ERROR: deploy-leaperone only accepts deployable refs (main or release tags). Got ref: $REF" >&2
+            exit 1
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/LEAPERone
+          ref: ${{ steps.set-ref.outputs.ref }}
+
+      - name: Check Skip CI
+        run: |
+          if grep -q "noci" <<< "${{ github.event.client_payload.message || '' }}"; then
+            echo "跳过构建: commit message 包含 'noci'"
+            exit 78
+          fi
+
+      - name: Validate checked out API source
+        id: source
+        env:
+          REQUESTED_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SOURCE_SHA="$(git rev-parse HEAD)"
+          if [ -n "$REQUESTED_SOURCE_SHA" ]; then
+            if ! [[ "$REQUESTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "ERROR: source_sha must be a full lowercase Git SHA" >&2
+              exit 1
+            fi
+            if [ "$REQUESTED_SOURCE_SHA" != "$ACTUAL_SOURCE_SHA" ]; then
+              echo "ERROR: requested source_sha does not match the checked out ref" >&2
+              echo "requested=$REQUESTED_SOURCE_SHA" >&2
+              echo "actual=$ACTUAL_SOURCE_SHA" >&2
+              exit 1
+            fi
+          fi
+          test -f apps/api/Dockerfile || {
+            echo "ERROR: API Dockerfile is missing" >&2
+            exit 1
+          }
+          grep -q '^[[:space:]]*leaperone-api:' docker/docker-compose-build.yml || {
+            echo "ERROR: build compose is missing the leaperone-api service" >&2
+            exit 1
+          }
+          echo "sha=$ACTUAL_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Setup docker-compose
+        uses: KengoTODA/actions-setup-docker-compose@v1
+        with:
+          version: '2.14.2'
+
+      - name: Build API image
+        run: docker compose -f ./docker/docker-compose-build.yml build leaperone-api
+
+      - name: Login to Aliyun Docker Registry
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-hongkong.aliyuncs.com
+          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+
+      - name: Push immutable and latest API image
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="${{ steps.source.outputs.sha }}"
+          REGISTRY_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone"
+
+          if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: expected a full Git source SHA, got: $SOURCE_SHA" >&2
+            exit 1
+          fi
+
+          docker tag "${REGISTRY_IMAGE}:api-latest" "${REGISTRY_IMAGE}:api-${SOURCE_SHA}"
+
+          # Immutable tags are the deployment source of truth. Keep latest for
+          # humans and legacy consumers, but never deploy from it here.
+          docker push "${REGISTRY_IMAGE}:api-${SOURCE_SHA}"
+          docker push "${REGISTRY_IMAGE}:api-latest"
+
+      - name: Setup Node.js
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pnpm
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.0
+
+      - name: Validate DE database env
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        env:
+          LEAPERONE_DE_DATABASE_URL: ${{ secrets.LEAPERONE_DE_DATABASE_URL }}
+        run: |
+          test -n "$LEAPERONE_DE_DATABASE_URL" || {
+            echo "LEAPERONE_DE_DATABASE_URL is required for DE migrations"
+            exit 1
+          }
+
+      - name: Open DE Postgres SSH tunnel
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+          DE_APP_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          KEY_FILE="$(mktemp)"
+          printf '%s\n' "$DE_APP_SSH_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          ssh-keyscan -p "$DE_APP_PORT" "$DE_APP_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -fN \
+            -i "$KEY_FILE" \
+            -p "$DE_APP_PORT" \
+            -L 15432:127.0.0.1:5432 \
+            "$DE_APP_USERNAME@$DE_APP_HOST"
+
+      - name: Run Database Migrations
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        run: |
+          pnpm install --filter @leaperone/db
+          DATABASE_URL="${{ secrets.LEAPERONE_DE_DATABASE_URL }}" pnpm --filter @leaperone/db db:migrate
+
+  deploy-de:
+    needs: build
+    if: needs.build.outputs.is_deployable == 'true'
+    uses: ./.github/workflows/deploy-de.yml
+    with:
+      project: leaperone
+      env: production
+      image_source_sha: ${{ needs.build.outputs.source_sha }}
+    secrets: inherit

@@ -1,0 +1,30 @@
+# multipost web — 蓝绿版（Germany / production 经 deploy-de.yml 使用）。
+#
+# 相对 legacy 三合一 compose 的改动（为支持两色并存做的最小改动）：
+#  1. web 从主 docker-compose.yml 剥离到本文件 —— 避免 `-p multipost-<color>` 把 worker 也起两份。
+#  2. 去掉写死的 container_name —— 改用 compose project name 区分两色（multipost-web-blue / -green）。
+#  3. WEB_PORT 两色不同：blue=9900（沿用现状），green=9910。
+#  4. 不放 compose healthcheck —— 就绪判定交给 deploy-bluegreen.sh 的一次性 curl -f /api/health
+#     （multipost 的 /api/health 是纯 liveness，不碰 DB/上游）；崩溃恢复交给 restart: unless-stopped。
+#
+# 部署由通用入口探测到同目录可执行的 deploy-bluegreen.sh 后委派执行：
+#   COLOR=<color> WEB_PORT=<port> docker compose -p multipost-web-<color> -f docker-compose.web.yml up -d --pull always
+# IMAGE_TAG 仍来自 .env（现网 = latest）。
+name: multipost-web-${COLOR:-blue}
+
+services:
+  web:
+    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/multipost:${IMAGE_TAG:-latest}
+    ports:
+      - "127.0.0.1:${WEB_PORT:-9900}:3000"
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - leaperone-prod
+    restart: unless-stopped
+
+networks:
+  leaperone-prod:
+    external: true

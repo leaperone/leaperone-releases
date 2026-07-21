@@ -1,0 +1,35 @@
+name: leaperone-${DEPLOY_ENV:-production}
+
+# Docker Compose reads root .env only for interpolation. Application runtime
+# variables and secrets belong in .env.api. The legacy Web is permanently
+# retired and must not be reintroduced into this project.
+services:
+  api:
+    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/leaperone:${API_IMAGE_TAG:?API_IMAGE_TAG must be an immutable API source-SHA tag}
+    container_name: leaperone-api-${DEPLOY_ENV:-production}
+    env_file:
+      - .env.api
+    volumes:
+      - type: bind
+        source: ./alipay-cert
+        target: /app/alipay-cert
+        read_only: true
+        bind:
+          create_host_path: false
+    environment:
+      PORT: 9000
+      DENO_ENV: production
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
+      ENABLE_IMAGE_WORKER: ${ENABLE_IMAGE_WORKER:-true}
+      ENABLE_EMAIL_LISTENER: ${ENABLE_EMAIL_LISTENER:-false}
+      ENABLE_TEMP_IMAGE_SERVER: ${ENABLE_TEMP_IMAGE_SERVER:-true}
+      TEMP_IMAGE_BASE_URL: ${TEMP_IMAGE_BASE_URL:-https://api.leaper.one/temp-images}
+    ports:
+      - "127.0.0.1:${API_PORT:-9801}:9000"
+    networks:
+      - leaperone-prod
+    restart: unless-stopped
+
+networks:
+  leaperone-prod:
+    external: true

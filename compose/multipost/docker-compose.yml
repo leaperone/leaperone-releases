@@ -1,0 +1,40 @@
+# multipost 常驻服务（Germany / production）。
+#
+# web 已迁出到 docker-compose.web.yml 走蓝绿（见 BLUEGREEN.md）；本文件只管：
+#  - video-stt-worker：无端口、单例后台 worker，每次部署 recreate（瞬断可接受）。
+#  - backend：profile 默认禁用占位 —— 不参与本机蓝绿。启用前须确认全局只有一个实例轮询 multipost_db 的 cron 队列。
+#
+# deploy.sh 仍以本文件做存在性检查后委派 deploy-bluegreen.sh；后者会 `up -d` 本文件保证 worker 常驻。
+name: multipost-${DEPLOY_ENV:-production}
+
+services:
+  backend:
+    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/multipost:${BACKEND_IMAGE_TAG:-backend-latest}
+    container_name: multipost-backend-${DEPLOY_ENV:-production}
+    env_file:
+      - .env
+    environment:
+      MODE: ${MODE:-production}
+      PORT: ${BACKEND_PORT:-9000}
+    networks:
+      leaperone-prod:
+        aliases:
+          - multipost-backend
+    restart: unless-stopped
+    # Default disabled to prevent HK + PVE backends both polling the shared multipost_db
+    # cron queue. Enable at cutover with:
+    #   docker compose --profile backend up -d backend
+    profiles: ["backend"]
+
+  video-stt-worker:
+    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/multipost:${VIDEO_STT_WORKER_IMAGE_TAG:-video-stt-worker-latest}
+    container_name: multipost-video-stt-worker-${DEPLOY_ENV:-production}
+    env_file:
+      - .env
+    networks:
+      - leaperone-prod
+    restart: unless-stopped
+
+networks:
+  leaperone-prod:
+    external: true

@@ -1,0 +1,136 @@
+name: Deploy SaraClick
+run-name: >-
+  🚀 Deploy SaraClick · ${{ github.event.client_payload.env || inputs.env || 'production' }} · ${{ github.event.client_payload.message || inputs.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || inputs.env || 'production' }}]
+
+on:
+  repository_dispatch:
+    types: [deploy-saraclick]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.set-ref.outputs.pr_number }}
+      is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
+      components: ${{ steps.set-ref.outputs.components }}
+
+    steps:
+      - name: Validate and set ref
+        id: set-ref
+        run: |
+          REF="${{ github.event.client_payload.ref }}"
+          COMPONENTS="${{ github.event.client_payload.components || github.event.client_payload.build_targets }}"
+          if [ -z "$COMPONENTS" ]; then
+            COMPONENTS="web,backend"
+          fi
+          DEPLOY_WEB="false"
+          DEPLOY_BACKEND="false"
+          IFS=',' read -ra COMPONENT_LIST <<< "$COMPONENTS"
+          for component in "${COMPONENT_LIST[@]}"; do
+            component="${component//[[:space:]]/}"
+            case "$component" in
+              web)
+                DEPLOY_WEB="true"
+                ;;
+              backend)
+                DEPLOY_BACKEND="true"
+                ;;
+              all)
+                DEPLOY_WEB="true"
+                DEPLOY_BACKEND="true"
+                ;;
+              "")
+                ;;
+              *)
+                echo "ERROR: unknown SaraClick component: $component" >&2
+                exit 1
+                ;;
+            esac
+          done
+          if [ "$DEPLOY_WEB" != "true" ] || [ "$DEPLOY_BACKEND" != "true" ]; then
+            echo "ERROR: deploy-saraclick currently deploys web+backend together; use components=web,backend or all" >&2
+            exit 1
+          fi
+          echo "components=web,backend" >> $GITHUB_OUTPUT
+
+          if [ -z "$REF" ]; then
+            echo "ref=main" >> $GITHUB_OUTPUT
+            echo "pr_number=" >> $GITHUB_OUTPUT
+            echo "is_deployable=true" >> $GITHUB_OUTPUT
+            echo "使用默认分支: main (ref 为空)"
+          elif [[ "$REF" == "main" ]] || [[ "$REF" == "refs/heads/main" ]]; then
+            echo "ref=$REF" >> $GITHUB_OUTPUT
+            echo "pr_number=" >> $GITHUB_OUTPUT
+            echo "is_deployable=true" >> $GITHUB_OUTPUT
+            echo "使用 main 分支: $REF"
+          elif [[ "$REF" =~ ^([0-9]+)/merge ]] || [[ "$REF" == *"/merge"* ]]; then
+            echo "ERROR: deploy-saraclick is deploy-only and does not accept PR merge refs. Got ref: $REF" >&2
+            exit 1
+          elif [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
+            # Tag 格式，标记为需要部署
+            echo "ref=$REF" >> $GITHUB_OUTPUT
+            echo "pr_number=" >> $GITHUB_OUTPUT
+            echo "is_deployable=true" >> $GITHUB_OUTPUT
+            echo "检测到 tag: $REF，将执行部署"
+          else
+            echo "ERROR: deploy-saraclick only accepts deployable refs (main or release tags). Got ref: $REF" >&2
+            exit 1
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/SaraClick
+          ref: ${{ steps.set-ref.outputs.ref }}
+
+      - name: Check Skip CI
+        run: |
+          if grep -q "noci" <<< "${{ github.event.client_payload.message || '' }}"; then
+            echo "跳过构建: commit message 包含 'noci'"
+            exit 78
+          fi
+
+      - name: Setup docker-compose
+        uses: KengoTODA/actions-setup-docker-compose@v1
+        with:
+          version: '2.14.2'
+
+      - name: Build Docker images
+        run: docker compose -f ./docker/docker-compose-build.yml build
+
+      - name: Login to Aliyun Docker Registry
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-hongkong.aliyuncs.com
+          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+
+      - name: Tag and Push Docker images
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        run: |
+          docker push registry.cn-hongkong.aliyuncs.com/leaperone/saraclick:latest
+          docker push registry.cn-hongkong.aliyuncs.com/leaperone/saraclick:backend-latest
+      
+      - name: Run Database Migrations
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Execute Migrations
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        run: |
+          npm install -g prisma@6.19.0
+          export SARACLICK_DATABASE_URL="${{ secrets.SARACLICK_DATABASE_URL }}"
+          sh prisma/migrate_deploy.sh
+
+      - name: Deploy to Production
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.ALIYUN_HK_HOST }}
+          username: ${{ secrets.ALIYUN_CN_USERNAME }}
+          port: ${{ secrets.ALIYUN_CN_PORT }}
+          key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+          script: ${{ secrets.DEPLOY_SARACLICK_SCRIPT }}

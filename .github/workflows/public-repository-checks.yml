@@ -1,0 +1,43 @@
+name: Public repository checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  repository-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Enforce public repository policy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -d ops ]; then
+            echo "ERROR: operational runbooks do not belong in this repository" >&2
+            exit 1
+          fi
+
+          invalid_runs_on="$(
+            rg -n '^[[:space:]]*runs-on:' .github/workflows \
+              | rg -v 'runs-on:[[:space:]]+ubuntu-latest$' || true
+          )"
+          if [ -n "$invalid_runs_on" ]; then
+            echo "ERROR: workflows must use the fixed GitHub-hosted runner" >&2
+            printf '%s\n' "$invalid_runs_on" >&2
+            exit 1
+          fi
+
+          if rg -n '/(etc|opt|srv|var)/|(^|[[:space:]])ssh([[:space:]]|$)' README.md; then
+            echo "ERROR: README.md exposes operational details" >&2
+            exit 1
+          fi

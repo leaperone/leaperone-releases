@@ -1,0 +1,192 @@
+name: Deploy 2SOMEone Backend
+run-name: >-
+  🚀 Deploy 2SOMEone Backend · ${{ github.event.client_payload.env || inputs.env || 'production' }} · ${{ github.event.client_payload.message || inputs.message || '' }} · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.sha }}][env=${{ github.event.client_payload.env || inputs.env || 'production' }}]
+
+on:
+  repository_dispatch:
+    types: [deploy-backend]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Ref to deploy (only main or backend-v* tag accepted when env=production)'
+        required: false
+        default: 'main'
+      env:
+        description: 'Deploy environment'
+        required: true
+        type: choice
+        options:
+          - production
+          - beta
+        default: production
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      ref: ${{ steps.set-ref.outputs.ref }}
+      is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
+      is_tag: ${{ steps.set-ref.outputs.is_tag }}
+      deploy_env: ${{ steps.set-ref.outputs.deploy_env }}
+      components: ${{ steps.set-ref.outputs.components }}
+    steps:
+      - name: Validate and set ref
+        id: set-ref
+        run: |
+          REF="${{ github.event.inputs.ref || github.event.client_payload.ref }}"
+          ENV_INPUT="${{ github.event.inputs.env || github.event.client_payload.env }}"
+          COMPONENTS="${{ github.event.client_payload.components || github.event.client_payload.build_targets }}"
+          DEPLOY_ENV="${ENV_INPUT:-production}"
+
+          if [ -z "$COMPONENTS" ]; then
+            COMPONENTS="backend"
+          fi
+          DEPLOY_BACKEND="false"
+          IFS=',' read -ra COMPONENT_LIST <<< "$COMPONENTS"
+          for component in "${COMPONENT_LIST[@]}"; do
+            component="${component//[[:space:]]/}"
+            case "$component" in
+              backend|all)
+                DEPLOY_BACKEND="true"
+                ;;
+              "")
+                ;;
+              *)
+                echo "ERROR: deploy-backend only supports components=backend, got: $component" >&2
+                exit 1
+                ;;
+            esac
+          done
+          if [ "$DEPLOY_BACKEND" != "true" ]; then
+            echo "ERROR: no 2SOMEone backend component selected from: $COMPONENTS" >&2
+            exit 1
+          fi
+          echo "components=backend" >> "$GITHUB_OUTPUT"
+
+          # workflow_dispatch + env=production: only main or backend-v* tag
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "$DEPLOY_ENV" == "production" ]]; then
+            if [[ "$REF" == "main" || "$REF" == "refs/heads/main" || "$REF" =~ ^backend-v[0-9]+\.[0-9]+\.[0-9]+ || "$REF" =~ ^refs/tags/backend-v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+              IS_TAG=$([[ "$REF" =~ ^(refs/tags/)?backend-v ]] && echo true || echo false)
+              echo "ref=$REF" >> "$GITHUB_OUTPUT"
+              echo "is_deployable=true" >> "$GITHUB_OUTPUT"
+              echo "is_tag=$IS_TAG" >> "$GITHUB_OUTPUT"
+              echo "deploy_env=production" >> "$GITHUB_OUTPUT"
+              echo "manual production: ref=$REF (is_tag=$IS_TAG)"
+            else
+              echo "ERROR: production workflow_dispatch only accepts ref=main or backend-v* tags, got: $REF" >&2
+              exit 1
+            fi
+          elif [ -z "$REF" ] || [[ "$REF" == "main" ]] || [[ "$REF" == "refs/heads/main" ]]; then
+            echo "ref=${REF:-main}" >> "$GITHUB_OUTPUT"
+            echo "is_deployable=true" >> "$GITHUB_OUTPUT"
+            echo "is_tag=false" >> "$GITHUB_OUTPUT"
+            echo "deploy_env=$DEPLOY_ENV" >> "$GITHUB_OUTPUT"
+            echo "use main branch (ref empty or main)"
+          elif [[ "$REF" =~ ^(backend-)?v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ "$REF" =~ ^refs/tags/ ]]; then
+            echo "ref=$REF" >> "$GITHUB_OUTPUT"
+            echo "is_deployable=true" >> "$GITHUB_OUTPUT"
+            echo "is_tag=true" >> "$GITHUB_OUTPUT"
+            echo "deploy_env=$DEPLOY_ENV" >> "$GITHUB_OUTPUT"
+            echo "detected tag: $REF"
+          else
+            echo "ref=$REF" >> "$GITHUB_OUTPUT"
+            echo "is_deployable=false" >> "$GITHUB_OUTPUT"
+            echo "is_tag=false" >> "$GITHUB_OUTPUT"
+            echo "deploy_env=$DEPLOY_ENV" >> "$GITHUB_OUTPUT"
+            echo "non-deployable ref: $REF"
+          fi
+
+  build-and-push:
+    needs: prepare
+    if: needs.prepare.outputs.is_deployable == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-twosomeone-backend-deployable
+      cancel-in-progress: false
+    outputs:
+      app_sha: ${{ steps.app-sha.outputs.sha }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/2SOMEone
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Check Skip CI
+        run: |
+          if grep -q "noci" <<< "${{ github.event.client_payload.message || '' }}"; then
+            echo "skip build: commit message contains 'noci'"
+            exit 78
+          fi
+
+      - name: Compute app SHA
+        id: app-sha
+        run: echo "sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Login to Aliyun Docker Registry (Shanghai)
+        uses: docker/login-action@v4
+        with:
+          registry: registry.cn-shanghai.aliyuncs.com
+          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute Docker tags
+        id: docker-tags
+        run: |
+          APP_SHA="${{ steps.app-sha.outputs.sha }}"
+          IS_TAG="${{ needs.prepare.outputs.is_tag }}"
+          REF="${{ needs.prepare.outputs.ref }}"
+
+          TAGS=""
+          TAGS+="registry.cn-shanghai.aliyuncs.com/leaperone/2someren:backend-main-latest"$'\n'
+          TAGS+="registry.cn-shanghai.aliyuncs.com/leaperone/2someren:backend-${APP_SHA}"$'\n'
+          if [ "$IS_TAG" == "true" ]; then
+            TAG_NAME="${REF#refs/tags/}"
+            TAGS+="registry.cn-shanghai.aliyuncs.com/leaperone/2someren:${TAG_NAME}"$'\n'
+          fi
+          {
+            echo "tags<<EOF"
+            echo -n "$TAGS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/backend/docker/Dockerfile
+          push: true
+          tags: ${{ steps.docker-tags.outputs.tags }}
+          cache-from: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:backend-twosomeone
+          cache-to: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:backend-twosomeone,mode=max,ignore-error=true
+
+  # Wait for web's migrate job to finish so backend never boots against an un-migrated schema.
+  # Atlas-era migration is owned solely by web's deploy-twosomeone.yml; backend should not
+  # run migrations itself (single-owner principle, see 2SOMEone issue #344 follow-up).
+  await-migrate:
+    needs: [prepare, build-and-push]
+    if: needs.prepare.outputs.is_deployable == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-twosomeone-migrate
+      cancel-in-progress: false
+    steps:
+      - name: No-op (serialize against web's migrate job)
+        run: echo "Waited for deploy-twosomeone-migrate group. backend runtime schema check (apps/backend/src/index.ts) is the secondary safety net."
+
+  deploy-pve:
+    needs: [prepare, build-and-push, await-migrate]
+    if: needs.prepare.outputs.is_deployable == 'true'
+    uses: ./.github/workflows/deploy-pve.yml
+    with:
+      project: twosomeone-backend
+      env: ${{ needs.prepare.outputs.deploy_env }}
+      internal: false
+    secrets: inherit
