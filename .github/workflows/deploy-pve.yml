@@ -24,6 +24,18 @@ jobs:
       - name: Checkout deployment configs
         uses: actions/checkout@v6
 
+      - name: Sync deploy entrypoint to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ inputs.internal && secrets.PVE_APP_HOST_INTERNAL || secrets.PVE_APP_HOST }}
+          username: ${{ secrets.PVE_APP_USERNAME }}
+          key: ${{ secrets.PVE_APP_SSH_KEY }}
+          port: ${{ inputs.internal && secrets.PVE_APP_PORT_INTERNAL || secrets.PVE_APP_PORT }}
+          source: "scripts/deploy.sh"
+          target: "${{ secrets.APP_DEPLOY_ROOT }}/bin"
+          strip_components: 1
+          overwrite: true
+
       - name: Sync compose directory to server
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -38,10 +50,13 @@ jobs:
 
       - name: Deploy
         uses: appleboy/ssh-action@v1.0.0
+        env:
+          APP_DEPLOY_ROOT: ${{ secrets.APP_DEPLOY_ROOT }}
         with:
           host: ${{ inputs.internal && secrets.PVE_APP_HOST_INTERNAL || secrets.PVE_APP_HOST }}
           username: ${{ secrets.PVE_APP_USERNAME }}
           key: ${{ secrets.PVE_APP_SSH_KEY }}
           port: ${{ inputs.internal && secrets.PVE_APP_PORT_INTERNAL || secrets.PVE_APP_PORT }}
           command_timeout: 20m
-          script: ${{ secrets.APP_DEPLOY_ROOT }}/bin/deploy.sh ${{ inputs.project }} ${{ inputs.env }}
+          envs: APP_DEPLOY_ROOT
+          script: $APP_DEPLOY_ROOT/bin/deploy.sh ${{ inputs.project }} ${{ inputs.env }}
