@@ -1,0 +1,61 @@
+name: leaperone-emailer-${DEPLOY_ENV:-production}
+
+# This project intentionally reuses the immutable LEAPERone API image while
+# replacing its default command with the standalone emailer entrypoint;
+# apps/api/main.ts is never executed.
+services:
+  emailer:
+    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/leaperone:${API_IMAGE_TAG:?API_IMAGE_TAG must be an immutable api-<source-sha> tag}
+    container_name: leaperone-emailer-${DEPLOY_ENV:-production}
+    working_dir: /app/apps/api
+    entrypoint:
+      - deno
+      - run
+      - --env
+      - -A
+      - emailer.ts
+    command: []
+    env_file:
+      - .env.worker
+    ports:
+      - "25:25/tcp"
+    healthcheck:
+      test:
+        - CMD
+        - deno
+        - eval
+        - >-
+          const connection = await Deno.connect({ hostname: "127.0.0.1", port: 25 });
+          const banner = new Uint8Array(4);
+          let offset = 0;
+          try {
+            while (offset < banner.length) {
+              const read = await connection.read(banner.subarray(offset));
+              if (read === null) break;
+              offset += read;
+            }
+          } finally {
+            connection.close();
+          }
+          if (new TextDecoder().decode(banner.subarray(0, offset)) !== "220 ") Deno.exit(1);
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    cpus: "1.0"
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
