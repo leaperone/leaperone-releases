@@ -31,15 +31,42 @@ on:
         type: string
         default: ""
         description: "Expected registry manifest digest for deployment verification"
+      deployment_mode:
+        required: false
+        type: string
+        default: "active"
+        description: "Deployment behavior: active or cold"
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-de-${{ inputs.project }}-${{ inputs.env }}
+      cancel-in-progress: false
     steps:
       - name: Checkout deployment configs
         uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+
+      - name: Validate deployment inputs
+        shell: bash
+        env:
+          DEPLOY_PROJECT: ${{ inputs.project }}
+          DEPLOY_ENVIRONMENT: ${{ inputs.env }}
+          DEPLOYMENT_MODE: ${{ inputs.deployment_mode }}
+        run: |
+          set -euo pipefail
+          case "$DEPLOY_PROJECT" in
+            ""|*[!a-z0-9_-]*) echo "ERROR: invalid project" >&2; exit 1 ;;
+          esac
+          case "$DEPLOY_ENVIRONMENT" in
+            ""|*[!a-z0-9_-]*) echo "ERROR: invalid environment" >&2; exit 1 ;;
+          esac
+          case "$DEPLOYMENT_MODE" in
+            active|cold) ;;
+            *) echo "ERROR: deployment_mode must be active or cold" >&2; exit 1 ;;
+          esac
 
       - name: Sync compose directory to server
         uses: appleboy/scp-action@v0.1.7
@@ -72,6 +99,7 @@ jobs:
           IMAGE_SOURCE_SHA: ${{ inputs.image_source_sha }}
           IMAGE_REF: ${{ inputs.image_ref }}
           IMAGE_DIGEST: ${{ inputs.image_digest }}
+          DEPLOYMENT_MODE: ${{ inputs.deployment_mode }}
           RELEASES_SHA: ${{ github.sha }}
           APP_DEPLOY_ROOT: ${{ secrets.APP_DEPLOY_ROOT }}
           DEPLOY_STATE_ROOT: ${{ secrets.DEPLOY_STATE_ROOT }}
@@ -82,7 +110,7 @@ jobs:
           key: ${{ secrets.DE_APP_SSH_KEY }}
           port: ${{ secrets.DE_APP_PORT }}
           command_timeout: 20m
-          envs: DEPLOY_COMPONENTS,IMAGE_SOURCE_SHA,IMAGE_REF,IMAGE_DIGEST,RELEASES_SHA,APP_DEPLOY_ROOT,DEPLOY_STATE_ROOT,ALIPAY_CERT_HOST_DIR
+          envs: DEPLOY_COMPONENTS,IMAGE_SOURCE_SHA,IMAGE_REF,IMAGE_DIGEST,DEPLOYMENT_MODE,RELEASES_SHA,APP_DEPLOY_ROOT,DEPLOY_STATE_ROOT,ALIPAY_CERT_HOST_DIR
           script: |
             set -euo pipefail
             : "${APP_DEPLOY_ROOT:?missing APP_DEPLOY_ROOT secret}"
@@ -93,11 +121,20 @@ jobs:
             IMAGE_SOURCE_SHA="${IMAGE_SOURCE_SHA:-}"
             IMAGE_REF="${IMAGE_REF:-}"
             IMAGE_DIGEST="${IMAGE_DIGEST:-}"
+            DEPLOYMENT_MODE="${DEPLOYMENT_MODE:-active}"
             RELEASES_SHA="${RELEASES_SHA:-}"
             COMPONENT=""
             CONTAINER_NAME=""
             EXPECTED_IMAGE_REF=""
             EXPECTED_REPO_DIGEST=""
+
+            case "$DEPLOYMENT_MODE" in
+              active|cold) ;;
+              *)
+                echo "ERROR: deployment_mode must be active or cold" >&2
+                exit 1
+                ;;
+            esac
 
             case "${{ inputs.project }}" in
               leaperone|leaperone-www|leaperone-dashboard)
@@ -151,7 +188,7 @@ jobs:
               export DEPLOY_IMAGE_REF="$EXPECTED_REPO_DIGEST"
             fi
 
-            if [ "${{ inputs.project }}" = "leaperone" ]; then
+            if [ "$DEPLOYMENT_MODE" = "active" ] && [ "${{ inputs.project }}" = "leaperone" ]; then
               # scp overwrite does not delete files removed from the repository.
               # Retire legacy routing payloads before the generic deployer can
               # see them, preserving a root-only, checksummed audit copy.
@@ -189,9 +226,9 @@ jobs:
               rmdir "$APP_DIR/scripts" "$APP_DIR/nginx" 2>/dev/null || true
             fi
 
-            bash "$TOOL_DIR/deploy.sh" "${{ inputs.project }}" "${{ inputs.env }}"
+            bash "$TOOL_DIR/deploy.sh" "${{ inputs.project }}" "${{ inputs.env }}" "$DEPLOYMENT_MODE"
 
-            if [ -n "$CONTAINER_NAME" ]; then
+            if [ "$DEPLOYMENT_MODE" = "active" ] && [ -n "$CONTAINER_NAME" ]; then
               CONTAINER_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$CONTAINER_NAME")"
               if ! docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$CONTAINER_IMAGE_ID" \
                 | grep -Fxq "$EXPECTED_REPO_DIGEST"; then
@@ -200,6 +237,7 @@ jobs:
               fi
             fi
 
+            [ "$DEPLOYMENT_MODE" = "active" ] || exit 0
             [ -n "$COMPONENT" ] || exit 0
 
             RECORD_DIR="${DEPLOY_STATE_ROOT}/deployments"
