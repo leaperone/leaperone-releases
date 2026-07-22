@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-EXPECTED_DIR=/home/leaperone/services/leaperone-emailer
+EXPECTED_DIR=/home/leaperone/services/leaperone-email-worker
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 COMPOSE_ENV="$SCRIPT_DIR/.env"
 WORKER_ENV="$SCRIPT_DIR/.env.worker"
@@ -91,41 +91,66 @@ deploy_env="$(require_env "$COMPOSE_ENV" DEPLOY_ENV)"
 registry_host="$(require_env "$COMPOSE_ENV" REGISTRY_HOST)"
 [ "$registry_host" = registry.cn-hongkong.aliyuncs.com ] || \
   fail "REGISTRY_HOST must remain registry.cn-hongkong.aliyuncs.com"
-api_image_tag="$(require_env "$COMPOSE_ENV" API_IMAGE_TAG)"
-[[ "$api_image_tag" =~ ^api-[0-9a-f]{40}$ ]] || \
-  fail "API_IMAGE_TAG must be exactly api-<40 lowercase hex source SHA>"
+image_tag="$(require_env "$COMPOSE_ENV" EMAIL_WORKER_IMAGE_TAG)"
+[[ "$image_tag" =~ ^email-worker-[0-9a-f]{40}$ ]] || \
+  fail "EMAIL_WORKER_IMAGE_TAG must be exactly email-worker-<40 lowercase hex source SHA>"
+source_sha="$(require_env "$COMPOSE_ENV" EMAIL_WORKER_SOURCE_SHA)"
+[[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || \
+  fail "EMAIL_WORKER_SOURCE_SHA must be a full lowercase source SHA"
+[ "$image_tag" = "email-worker-$source_sha" ] || \
+  fail "EMAIL_WORKER_IMAGE_TAG does not match EMAIL_WORKER_SOURCE_SHA"
+image_digest="$(require_env "$COMPOSE_ENV" EMAIL_WORKER_IMAGE_DIGEST)"
+[[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || \
+  fail "EMAIL_WORKER_IMAGE_DIGEST must be a sha256 registry manifest digest"
+release_tag="$(require_env "$COMPOSE_ENV" EMAIL_WORKER_RELEASE_TAG)"
+[[ "$release_tag" =~ ^email-worker-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || \
+  fail "EMAIL_WORKER_RELEASE_TAG must be email-worker-vX.Y.Z"
+releases_sha="$(require_env "$COMPOSE_ENV" RELEASES_SHA)"
+[[ "$releases_sha" =~ ^[0-9a-f]{40}$ ]] || \
+  fail "RELEASES_SHA must be a full lowercase releases repository SHA"
 
-[ "$(require_env "$WORKER_ENV" DENO_ENV)" = production ] || \
-  fail "DENO_ENV must be production"
+[ "$(require_env "$WORKER_ENV" EMAIL_WORKER_ENVIRONMENT)" = production ] || \
+  fail "EMAIL_WORKER_ENVIRONMENT must be production"
 [ "$(require_env "$WORKER_ENV" EMAIL_LISTENER_HOSTNAME)" = 0.0.0.0 ] || \
   fail "EMAIL_LISTENER_HOSTNAME must be 0.0.0.0"
-[ "$(require_uint_range "$WORKER_ENV" EMAIL_LISTENER_PORT 25 25)" = 25 ]
+[ "$(require_uint_range "$WORKER_ENV" EMAIL_LISTENER_PORT 2525 2525)" = 2525 ]
 require_uint_range "$WORKER_ENV" EMAIL_MAX_MESSAGE_BYTES 29360128 67108864 >/dev/null
 idle_timeout_ms="$(require_uint_range "$WORKER_ENV" EMAIL_IDLE_TIMEOUT_MS 5000 300000)"
 session_timeout_ms="$(require_uint_range "$WORKER_ENV" EMAIL_SESSION_TIMEOUT_MS 30000 1800000)"
-require_uint_range "$WORKER_ENV" EMAIL_MAX_CONNECTIONS 1 256 >/dev/null
+require_uint_range "$WORKER_ENV" EMAIL_MAX_CONNECTIONS 1 8 >/dev/null
 require_uint_range "$WORKER_ENV" EMAIL_MAX_COMMAND_BYTES 1024 65536 >/dev/null
 require_uint_range "$WORKER_ENV" EMAIL_MAX_RECIPIENTS 1 64 >/dev/null
 (( session_timeout_ms >= idle_timeout_ms )) || \
   fail "EMAIL_SESSION_TIMEOUT_MS must be greater than or equal to EMAIL_IDLE_TIMEOUT_MS"
-[ "$(require_env "$WORKER_ENV" EMAIL_LOG_ENABLED)" = false ] || \
-  fail "EMAIL_LOG_ENABLED must be false for the database-independent HK worker"
 twosomeone_base_url="$(require_env "$WORKER_ENV" TWOSOMEONE_BASE_URL)"
 [[ "$twosomeone_base_url" =~ ^https://[^[:space:]]+$ ]] || \
   fail "TWOSOMEONE_BASE_URL must be an HTTPS URL"
 internal_secret="$(require_env "$WORKER_ENV" TWOSOMEONE_INTERNAL_SECRET)"
 [ "$internal_secret" != 2someone ] || \
-  fail "TWOSOMEONE_INTERNAL_SECRET must not use the handler's insecure fallback"
-
-if awk -F= '/^DATABASE_URL=/{found=1} END{exit !found}' "$WORKER_ENV"; then
-  fail "DATABASE_URL must not be injected into the database-independent HK worker"
+  fail "TWOSOMEONE_INTERNAL_SECRET must not use an insecure fallback"
+sentry_dsn="$(read_env_value "$WORKER_ENV" SENTRY_DSN_EMAIL_WORKER)"
+if [ -n "$sentry_dsn" ] && ! [[ "$sentry_dsn" =~ ^https://[^[:space:]]+$ ]]; then
+  fail "SENTRY_DSN_EMAIL_WORKER must be an HTTPS DSN when configured"
+fi
+sentry_sample_rate="$(read_env_value "$WORKER_ENV" SENTRY_TRACES_SAMPLE_RATE_EMAIL_WORKER)"
+if [ -n "$sentry_sample_rate" ] && ! awk -v value="$sentry_sample_rate" '
+  BEGIN { exit !(value ~ /^(0(\.[0-9]+)?|1(\.0+)?)$/ && value >= 0 && value <= 1) }
+'; then
+  fail "SENTRY_TRACES_SAMPLE_RATE_EMAIL_WORKER must be between 0 and 1"
 fi
 
-container_name="leaperone-emailer-$deploy_env"
+for forbidden_key in DATABASE_URL DENO_ENV EMAIL_LOG_ENABLED POSTHOG_PROJECT_TOKEN SENTRY_DSN_API; do
+  if awk -F= -v wanted="$forbidden_key" 'index($0,wanted "=")==1{found=1} END{exit !found}' "$WORKER_ENV"; then
+    fail "$forbidden_key is not part of the standalone Email Worker runtime contract"
+  fi
+done
+
+container_name="leaperone-email-worker-$deploy_env"
 if port_25_is_listening; then
   docker ps --format '{{.Names}}' | grep -Fxq "$container_name" || \
     fail "host TCP port 25 is already occupied by a process other than $container_name"
 fi
 
 docker compose --project-directory "$SCRIPT_DIR" -f "$COMPOSE_FILE" config --quiet
-printf 'LEAPERone Email Worker preflight passed: %s -> 0.0.0.0:25\n' "$api_image_tag"
+printf 'LEAPERone Email Worker preflight passed: %s@%s -> 0.0.0.0:25\n' \
+  "$image_tag" "$image_digest"
