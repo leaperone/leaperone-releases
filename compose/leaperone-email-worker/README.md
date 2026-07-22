@@ -54,6 +54,7 @@ RepoDigest 和部署标签验证。失败时 `deploy.sh` 恢复旧 `.env` 并重
 - `leaperone` 用户可使用 Docker、`flock`，并已登录香港 ACR。
 - 首次自动发布前手工创建目标目录及 `.env`、`.env.worker`；工作流永远不会
   创建、传输或覆盖运行时秘密。
+- 部署串行锁位于目标目录的 `.deploy.lock`，不要求发布账号写入 `/run/lock`。
 
 ## 服务器本地配置
 

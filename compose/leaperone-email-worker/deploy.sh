@@ -10,7 +10,7 @@ APP_DIR=/home/leaperone/services/leaperone-email-worker
 ENV_FILE="$APP_DIR/.env"
 PREFLIGHT="$APP_DIR/preflight.sh"
 CONTAINER_NAME=leaperone-email-worker-production
-LOCK_FILE=/run/lock/leaperone-email-worker-deploy.lock
+LOCK_FILE="$APP_DIR/.deploy.lock"
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
