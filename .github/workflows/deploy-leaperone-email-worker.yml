@@ -251,9 +251,11 @@ jobs:
           envs: SOURCE_SHA,IMAGE_DIGEST,RELEASE_TAG,RELEASES_SHA
           script_stop: true
           script: |
+            bash -se <<'BASH'
             set -euo pipefail
             APP_DIR=/home/leaperone/services/leaperone-email-worker
             test -s "$APP_DIR/.env" || { echo "ERROR: $APP_DIR/.env must be provisioned first" >&2; exit 1; }
             test -s "$APP_DIR/.env.worker" || { echo "ERROR: $APP_DIR/.env.worker must be provisioned first" >&2; exit 1; }
             chmod 0700 "$APP_DIR/preflight.sh" "$APP_DIR/deploy.sh"
             "$APP_DIR/deploy.sh" "$SOURCE_SHA" "$IMAGE_DIGEST" "$RELEASE_TAG" "$RELEASES_SHA"
+            BASH
