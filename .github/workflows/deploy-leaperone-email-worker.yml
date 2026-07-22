@@ -1,0 +1,259 @@
+name: Deploy LEAPERone Email Worker
+run-name: >-
+  📬 Deploy LEAPERone Email Worker · ${{ github.event.client_payload.ref || inputs.ref }} · @${{ github.event.client_payload.author || github.actor }}
+
+on:
+  repository_dispatch:
+    types: [deploy-leaperone-email-worker]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Exact LEAPERone source tag: email-worker-vX.Y.Z"
+        required: true
+        type: string
+      source_sha:
+        description: "Optional full source SHA which must match the tag"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: leaperone-email-worker-hk-production
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+      release_tag: ${{ steps.request.outputs.tag }}
+      image_ref: ${{ steps.image.outputs.ref }}
+      image_digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Validate production release request
+        id: request
+        env:
+          REQUESTED_REF: ${{ github.event.client_payload.ref || inputs.ref }}
+          REQUESTED_ENV: ${{ github.event.client_payload.env || 'production' }}
+          REQUESTED_COMPONENTS: ${{ github.event.client_payload.components || 'email-worker' }}
+          RELEASES_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [ "$RELEASES_REF" = refs/heads/main ] || {
+            echo "ERROR: production deployment workflow must run from leaperone-releases main" >&2
+            exit 1
+          }
+          [ "$REQUESTED_ENV" = production ] || {
+            echo "ERROR: Email Worker workflow is production-only" >&2
+            exit 1
+          }
+          [ "$REQUESTED_COMPONENTS" = email-worker ] || {
+            echo "ERROR: workflow can deploy only components=email-worker" >&2
+            exit 1
+          }
+
+          TAG="${REQUESTED_REF#refs/tags/}"
+          if ! [[ "$TAG" =~ ^email-worker-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "ERROR: ref must be an exact email-worker-vX.Y.Z source tag" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ref=refs/tags/$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout tagged LEAPERone source
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/LEAPERone
+          ref: ${{ steps.request.outputs.ref }}
+          fetch-depth: 0
+          path: source
+
+      - name: Validate app version and tagged source
+        id: source
+        working-directory: source
+        env:
+          RELEASE_TAG: ${{ steps.request.outputs.tag }}
+          REQUESTED_SOURCE_SHA: ${{ github.event.client_payload.source_sha || inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "ERROR: source checkout did not resolve to a full SHA" >&2
+            exit 1
+          }
+          if [ -n "$REQUESTED_SOURCE_SHA" ] && [ "$REQUESTED_SOURCE_SHA" != "$SOURCE_SHA" ]; then
+            echo "ERROR: requested source SHA does not match $RELEASE_TAG" >&2
+            exit 1
+          fi
+          [ "$(git rev-list -n 1 "$RELEASE_TAG")" = "$SOURCE_SHA" ] || {
+            echo "ERROR: checked out commit is not the commit referenced by $RELEASE_TAG" >&2
+            exit 1
+          }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main || {
+            echo "ERROR: $RELEASE_TAG points to a commit which is not merged into LEAPERone main" >&2
+            exit 1
+          }
+
+          test -f apps/email-worker/deno.json || {
+            echo "ERROR: apps/email-worker/deno.json is missing" >&2
+            exit 1
+          }
+          test -f apps/email-worker/Dockerfile || {
+            echo "ERROR: apps/email-worker/Dockerfile is missing" >&2
+            exit 1
+          }
+          APP_VERSION="$(jq -er '.version | select(type == "string" and length > 0)' apps/email-worker/deno.json)"
+          [[ "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
+            echo "ERROR: apps/email-worker/deno.json has an invalid version" >&2
+            exit 1
+          }
+          EXPECTED_TAG="email-worker-v${APP_VERSION}"
+          [ "$RELEASE_TAG" = "$EXPECTED_TAG" ] || {
+            echo "ERROR: source tag $RELEASE_TAG must equal $EXPECTED_TAG" >&2
+            exit 1
+          }
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Deno matching the Email Worker image
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.3.3
+
+      - name: Check and test only apps/email-worker
+        working-directory: source/apps/email-worker
+        env:
+          RELEASE_TAG: ${{ steps.request.outputs.tag }}
+        run: |
+          set -euo pipefail
+          deno task verify:tag "$RELEASE_TAG"
+          deno task check
+          deno task test
+
+      - name: Validate registry credentials
+        env:
+          REGISTRY_USERNAME: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+        run: |
+          test -n "$REGISTRY_USERNAME" || { echo "ERROR: ALIYUN_DOCKER_USERNAME is required" >&2; exit 1; }
+          test -n "$REGISTRY_PASSWORD" || { echo "ERROR: ALIYUN_DOCKER_PASSWORD is required" >&2; exit 1; }
+
+      - name: Login to Aliyun Hong Kong ACR
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-hongkong.aliyuncs.com
+          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push only apps/email-worker
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./source
+          file: ./source/apps/email-worker/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:email-worker-${{ steps.source.outputs.sha }}
+            registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:${{ steps.request.outputs.tag }}
+            registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:email-worker-latest
+          labels: |
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+            org.opencontainers.image.version=${{ steps.source.outputs.version }}
+            org.opencontainers.image.source=https://github.com/leaperone/LEAPERone
+            com.leaperone.component=email-worker
+          cache-from: type=gha,scope=leaperone-email-worker
+          cache-to: type=gha,mode=max,scope=leaperone-email-worker
+          provenance: mode=max
+
+      - name: Validate immutable publish result
+        id: image
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "ERROR: Buildx did not return a valid image digest" >&2
+            exit 1
+          }
+          IMAGE_REF="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:email-worker-${SOURCE_SHA}"
+          docker buildx imagetools inspect "${IMAGE_REF}@${IMAGE_DIGEST}" >/dev/null
+          echo "ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+
+  deploy-hk:
+    needs: build-and-publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout triggering releases snapshot
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate release payload and deployment credentials
+        id: release
+        env:
+          HK_HOST: ${{ secrets.ALIYUN_HK_HOST }}
+          HK_USERNAME: ${{ secrets.ALIYUN_CN_USERNAME }}
+          HK_PORT: ${{ secrets.ALIYUN_CN_PORT }}
+          HK_SSH_KEY: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$HK_HOST" || { echo "ERROR: ALIYUN_HK_HOST is required" >&2; exit 1; }
+          test -n "$HK_USERNAME" || { echo "ERROR: ALIYUN_CN_USERNAME is required" >&2; exit 1; }
+          test -n "$HK_PORT" || { echo "ERROR: ALIYUN_CN_PORT is required" >&2; exit 1; }
+          test -n "$HK_SSH_KEY" || { echo "ERROR: ALIYUN_CN_SSH_PRIVATE_KEY is required" >&2; exit 1; }
+          test -x compose/leaperone-email-worker/preflight.sh
+          test -x compose/leaperone-email-worker/deploy.sh
+          bash -n compose/leaperone-email-worker/preflight.sh
+          bash -n compose/leaperone-email-worker/deploy.sh
+          RELEASES_SHA="$(git rev-parse HEAD)"
+          [[ "$RELEASES_SHA" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$RELEASES_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Sync only HK Email Worker compose unit
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.ALIYUN_HK_HOST }}
+          username: ${{ secrets.ALIYUN_CN_USERNAME }}
+          port: ${{ secrets.ALIYUN_CN_PORT }}
+          key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+          source: "compose/leaperone-email-worker/*"
+          target: "/home/leaperone/services/leaperone-email-worker"
+          strip_components: 2
+          overwrite: true
+
+      - name: Deploy, verify health, and roll back on failure
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          SOURCE_SHA: ${{ needs.build-and-publish.outputs.source_sha }}
+          IMAGE_DIGEST: ${{ needs.build-and-publish.outputs.image_digest }}
+          RELEASE_TAG: ${{ needs.build-and-publish.outputs.release_tag }}
+          RELEASES_SHA: ${{ steps.release.outputs.sha }}
+        with:
+          host: ${{ secrets.ALIYUN_HK_HOST }}
+          username: ${{ secrets.ALIYUN_CN_USERNAME }}
+          port: ${{ secrets.ALIYUN_CN_PORT }}
+          key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+          command_timeout: 10m
+          envs: SOURCE_SHA,IMAGE_DIGEST,RELEASE_TAG,RELEASES_SHA
+          script_stop: true
+          script: |
+            set -euo pipefail
+            APP_DIR=/home/leaperone/services/leaperone-email-worker
+            test -s "$APP_DIR/.env" || { echo "ERROR: $APP_DIR/.env must be provisioned first" >&2; exit 1; }
+            test -s "$APP_DIR/.env.worker" || { echo "ERROR: $APP_DIR/.env.worker must be provisioned first" >&2; exit 1; }
+            chmod 0700 "$APP_DIR/preflight.sh" "$APP_DIR/deploy.sh"
+            "$APP_DIR/deploy.sh" "$SOURCE_SHA" "$IMAGE_DIGEST" "$RELEASE_TAG" "$RELEASES_SHA"
