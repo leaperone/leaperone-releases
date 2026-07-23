@@ -215,7 +215,7 @@ jobs:
 
       - name: Pack sourcemaps
         if: needs.resolve-context.outputs.build_web == 'true'
-        run: tar -cf $RUNNER_TEMP/sourcemaps.tar -C $RUNNER_TEMP/sourcemaps .
+        run: tar -czf "$RUNNER_TEMP/sourcemaps.tar" -C "$RUNNER_TEMP/sourcemaps" .
 
       - name: Checkout source map transport
         if: needs.resolve-context.outputs.build_web == 'true'
