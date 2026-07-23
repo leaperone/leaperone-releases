@@ -100,10 +100,14 @@ jobs:
             exit 1
           fi
 
-          pnpm dlx @posthog/cli@0.8.4 sourcemap upload \
+          posthog_log="$RUNNER_TEMP/posthog-sourcemaps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          sentry_log="$RUNNER_TEMP/sentry-sourcemaps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+
+          RUST_LOG=error pnpm dlx @posthog/cli@0.8.4 sourcemap upload \
             --directory "$SOURCE_MAP_DIR" \
             --release-name "$POSTHOG_RELEASE_NAME" \
-            --release-version "$POSTHOG_RELEASE_VERSION" &
+            --release-version "$POSTHOG_RELEASE_VERSION" \
+            >"$posthog_log" 2>&1 &
           posthog_pid=$!
 
           (
@@ -114,13 +118,31 @@ jobs:
               --release "$SENTRY_RELEASE" \
               "$SOURCE_MAP_DIR"
             pnpm dlx @sentry/cli@2.58.5 releases finalize "$SENTRY_RELEASE"
-          ) &
+          ) >"$sentry_log" 2>&1 &
           sentry_pid=$!
 
           posthog_status=0
           sentry_status=0
           wait "$posthog_pid" || posthog_status=$?
           wait "$sentry_pid" || sentry_status=$?
+
+          if [ "$posthog_status" -eq 0 ]; then
+            echo "PostHog source maps uploaded successfully."
+          else
+            echo "::group::PostHog source map upload failure"
+            tail -n 120 "$posthog_log" >&2 || true
+            echo "::endgroup::"
+          fi
+
+          if [ "$sentry_status" -eq 0 ]; then
+            echo "Sentry source maps uploaded successfully."
+          else
+            echo "::group::Sentry source map upload failure"
+            tail -n 120 "$sentry_log" >&2 || true
+            echo "::endgroup::"
+          fi
+
+          rm -f "$posthog_log" "$sentry_log"
           if [ "$posthog_status" -ne 0 ] || [ "$sentry_status" -ne 0 ]; then
             echo "ERROR: one or more source map uploads failed" >&2
             exit 1
