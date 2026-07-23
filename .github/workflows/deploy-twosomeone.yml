@@ -202,7 +202,6 @@ jobs:
       cancel-in-progress: false
     outputs:
       app_sha: ${{ steps.app-sha.outputs.sha }}
-      sentry_release: ${{ steps.sentry.outputs.release }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -571,9 +570,9 @@ jobs:
     with:
       bundle_key: twosomeone/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build-and-push.outputs.app_sha }}.tar
       posthog_release_name: 2SOMEone
-      posthog_release_version: ${{ needs.build-and-push.outputs.sentry_release }}
+      posthog_release_version: ${{ needs.build-and-push.outputs.app_sha }}
       sentry_project: 2someone-web
-      sentry_release: 2someone-web@${{ needs.build-and-push.outputs.sentry_release }}
+      sentry_release: 2someone-web@${{ needs.build-and-push.outputs.app_sha }}
     secrets:
       spool_host: ${{ secrets.DE_APP_HOST }}
       spool_username: ${{ secrets.DE_APP_USERNAME }}
