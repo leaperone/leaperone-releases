@@ -10,6 +10,7 @@ jobs:
     outputs:
       pr_number: ${{ steps.set-ref.outputs.pr_number }}
       is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
+      source_sha: ${{ steps.sentry.outputs.release }}
 
     steps:
       - name: Validate and set ref
@@ -82,9 +83,23 @@ jobs:
         if: steps.set-ref.outputs.is_deployable == 'true'
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_DSN: ${{ vars.TWOSOMEREN_SENTRY_DSN }}
+          POSTHOG_PROJECT_TOKEN: ${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
         run: |
           test -n "$SENTRY_AUTH_TOKEN" || {
             echo "SENTRY_AUTH_TOKEN is required for deployable web builds"
+            exit 1
+          }
+          test -n "$SENTRY_DSN" || {
+            echo "TWOSOMEREN_SENTRY_DSN is required for deployable web builds"
+            exit 1
+          }
+          if ! [[ "$SENTRY_DSN" =~ ^https://[A-Za-z0-9._-]+@s\.2some\.ren/[0-9]+$ ]]; then
+            echo "TWOSOMEREN_SENTRY_DSN must use the 2SOMEren product ingest domain" >&2
+            exit 1
+          fi
+          test -n "$POSTHOG_PROJECT_TOKEN" || {
+            echo "POSTHOG_2SOMEONE_PROJECT_TOKEN is required for deployable web builds"
             exit 1
           }
 
@@ -95,16 +110,91 @@ jobs:
 
       - name: Build Docker images
         env:
-          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
-          POSTHOG_2SOMEONE_ENV_ID: ${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
-          NEXT_PUBLIC_POSTHOG_HOST: https://us.posthog.com
-          SENTRY_URL: https://s.2some.ren
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_CLI_PROJECT_ID: ${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
+          POSTHOG_2SOMEONE_ENV_ID: ${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
+          NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.ren
+          NEXT_PUBLIC_SENTRY_DSN: ${{ vars.TWOSOMEREN_SENTRY_DSN }}
+          SENTRY_URL: ${{ secrets.SENTRY_INTERNAL_URL }}
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: 2someone-web
           SENTRY_ENVIRONMENT: production
           SENTRY_RELEASE: 2someone-web@${{ steps.sentry.outputs.release }}
           SENTRY_AUTH_TOKEN: ${{ steps.set-ref.outputs.is_deployable == 'true' && secrets.SENTRY_AUTH_TOKEN || '' }}
+          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: ${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
         run: docker compose -f apps/web/docker/docker-compose-build.yml build
+
+      - name: Extract exact-build source maps
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        env:
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_CLI_PROJECT_ID: ${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
+          POSTHOG_2SOMEONE_ENV_ID: ${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
+          NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.ren
+          NEXT_PUBLIC_SENTRY_DSN: ${{ vars.TWOSOMEREN_SENTRY_DSN }}
+          SENTRY_URL: ${{ secrets.SENTRY_INTERNAL_URL }}
+          SENTRY_ORG: leaperone
+          SENTRY_PROJECT: 2someone-web
+          SENTRY_ENVIRONMENT: production
+          SENTRY_RELEASE: 2someone-web@${{ steps.sentry.outputs.release }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: ${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          SENTRY_TOKEN_FILE="$RUNNER_TEMP/sentry-auth-token"
+          POSTHOG_TOKEN_FILE="$RUNNER_TEMP/posthog-personal-api-key"
+          POSTHOG_PROJECT_FILE="$RUNNER_TEMP/posthog-project-id"
+          SERVER_ACTIONS_FILE="$RUNNER_TEMP/next-server-actions-key"
+          trap 'rm -f "$SENTRY_TOKEN_FILE" "$POSTHOG_TOKEN_FILE" "$POSTHOG_PROJECT_FILE" "$SERVER_ACTIONS_FILE"' EXIT
+          printf '%s' "$SENTRY_AUTH_TOKEN" > "$SENTRY_TOKEN_FILE"
+          printf '%s' "$POSTHOG_PERSONAL_API_KEY" > "$POSTHOG_TOKEN_FILE"
+          printf '%s' "$POSTHOG_CLI_PROJECT_ID" > "$POSTHOG_PROJECT_FILE"
+          printf '%s' "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY" > "$SERVER_ACTIONS_FILE"
+          DOCKER_BUILDKIT=1 docker build \
+            -f apps/web/docker/Dockerfile \
+            --target sourcemaps \
+            --build-arg POSTHOG_2SOMEONE_ENV_ID="$POSTHOG_2SOMEONE_ENV_ID" \
+            --build-arg NEXT_PUBLIC_POSTHOG_KEY="$NEXT_PUBLIC_POSTHOG_KEY" \
+            --build-arg NEXT_PUBLIC_POSTHOG_HOST="$NEXT_PUBLIC_POSTHOG_HOST" \
+            --build-arg NEXT_PUBLIC_SENTRY_DSN="$NEXT_PUBLIC_SENTRY_DSN" \
+            --build-arg SENTRY_URL="$SENTRY_URL" \
+            --build-arg SENTRY_ORG="$SENTRY_ORG" \
+            --build-arg SENTRY_PROJECT="$SENTRY_PROJECT" \
+            --build-arg SENTRY_ENVIRONMENT="$SENTRY_ENVIRONMENT" \
+            --build-arg SENTRY_RELEASE="$SENTRY_RELEASE" \
+            --secret id=sentry_auth_token,src="$SENTRY_TOKEN_FILE" \
+            --secret id=posthog_personal_api_key,src="$POSTHOG_TOKEN_FILE" \
+            --secret id=posthog_cli_project_id,src="$POSTHOG_PROJECT_FILE" \
+            --secret id=next_server_actions_encryption_key,src="$SERVER_ACTIONS_FILE" \
+            --output type=local,dest="$RUNNER_TEMP/sourcemaps" \
+            .
+
+      - name: Pack exact-build source maps
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        run: tar -cf "$RUNNER_TEMP/sourcemaps.tar" -C "$RUNNER_TEMP/sourcemaps/next" .
+
+      - name: Checkout source map transport
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: .release-automation
+          persist-credentials: false
+
+      - name: Stage exact-build source maps on PVE
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        env:
+          SOURCEMAP_SPOOL_HOST: ${{ secrets.PVE_APP_HOST }}
+          SOURCEMAP_SPOOL_PORT: ${{ secrets.PVE_APP_PORT }}
+          SOURCEMAP_SPOOL_USERNAME: ${{ secrets.PVE_APP_USERNAME }}
+          SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.PVE_APP_SSH_KEY }}
+          SOURCEMAP_SPOOL_ROOT: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
+          BUNDLE_KEY: twosomeren/${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.sentry.outputs.release }}.tar
+        run: .release-automation/scripts/stage-sourcemap-bundle.sh "$RUNNER_TEMP/sourcemaps.tar" "$BUNDLE_KEY"
 
       - name: Login to Aliyun Docker Registry (Shanghai)
         if: steps.set-ref.outputs.is_deployable == 'true'
@@ -184,3 +274,25 @@ jobs:
           port: ${{ secrets.ALIYUN_CN_PORT }}
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
           script: ${{ secrets.DEPLOY_TWOSOMEREN_HK_SCRIPT }}
+
+  upload-sourcemaps:
+    needs: build-and-deploy
+    if: needs.build-and-deploy.outputs.is_deployable == 'true'
+    uses: ./.github/workflows/upload-telemetry-sourcemaps.yml
+    with:
+      bundle_key: twosomeren/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build-and-deploy.outputs.source_sha }}.tar
+      posthog_release_name: 2SOMEone
+      posthog_release_version: ${{ needs.build-and-deploy.outputs.source_sha }}
+      sentry_project: 2someone-web
+      sentry_release: 2someone-web@${{ needs.build-and-deploy.outputs.source_sha }}
+    secrets:
+      spool_host: ${{ secrets.PVE_APP_HOST_INTERNAL }}
+      spool_port: ${{ secrets.PVE_APP_PORT_INTERNAL }}
+      spool_username: ${{ secrets.PVE_APP_USERNAME }}
+      spool_ssh_key: ${{ secrets.PVE_APP_SSH_KEY }}
+      spool_root: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
+      posthog_personal_api_key: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+      posthog_project_id: ${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
+      posthog_internal_url: ${{ secrets.POSTHOG_INTERNAL_URL }}
+      sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      sentry_internal_url: ${{ secrets.SENTRY_INTERNAL_URL }}

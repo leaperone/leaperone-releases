@@ -142,25 +142,38 @@ jobs:
         if: needs.resolve-context.outputs.build_web == 'true'
         run: echo "release=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Validate Sentry auth token
+      - name: Validate telemetry inputs
         if: needs.resolve-context.outputs.build_web == 'true'
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-        run: test -n "$SENTRY_AUTH_TOKEN" || { echo "SENTRY_AUTH_TOKEN required"; exit 1; }
+          SENTRY_DSN: ${{ vars.MULTIPOST_SENTRY_DSN }}
+          POSTHOG_PROJECT_TOKEN: ${{ vars.POSTHOG_MULTIPOST_PROJECT_TOKEN }}
+        run: |
+          test -n "$SENTRY_AUTH_TOKEN" || { echo "SENTRY_AUTH_TOKEN required"; exit 1; }
+          test -n "$SENTRY_DSN" || { echo "MULTIPOST_SENTRY_DSN required"; exit 1; }
+          if ! [[ "$SENTRY_DSN" =~ ^https://[A-Za-z0-9._-]+@s\.multipost\.app/[0-9]+$ ]]; then
+            echo "MULTIPOST_SENTRY_DSN must use the MultiPost product ingest domain" >&2
+            exit 1
+          fi
+          test -n "$POSTHOG_PROJECT_TOKEN" || { echo "POSTHOG_MULTIPOST_PROJECT_TOKEN required"; exit 1; }
 
       - name: Build Docker images
         env:
-          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
-          POSTHOG_MULTIPOST_ENV_ID: ${{ secrets.POSTHOG_MULTIPOST_ENV_ID }}
-          NEXT_PUBLIC_POSTHOG_KEY: phc_szGHmzMPL2vkmxOkrB120T4pSqq5WJWZdALmf1KCzdi
-          NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.one
-          NEXT_PUBLIC_SENTRY_DSN: https://422fa55253c74dc835e207a204dc2d16@sentry.leaperone.cn/6
+          # Build-time ID injection is offline. The personal API key is reserved
+          # for the PVE upload job and must not enter image build arguments.
+          POSTHOG_API_KEY: ""
+          POSTHOG_MULTIPOST_ENV_ID: ${{ secrets.POSTHOG_MULTIPOST_PROJECT_ID }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_MULTIPOST_PROJECT_TOKEN }}
+          NEXT_PUBLIC_POSTHOG_HOST: https://t.multipost.app
+          NEXT_PUBLIC_SENTRY_DSN: ${{ vars.MULTIPOST_SENTRY_DSN }}
           NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${{ needs.resolve-context.outputs.deploy_env }}
-          SENTRY_URL: https://sentry.leaperone.cn
+          SENTRY_URL: ${{ secrets.SENTRY_INTERNAL_URL }}
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: multipost-web
           SENTRY_RELEASE: multipost-web@${{ steps.sentry.outputs.release }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          # Sentry/PostHog IDs are injected into the exact build, but uploads are
+          # owned by the PVE job below. Keep this empty to prevent build-time upload.
+          SENTRY_AUTH_TOKEN: ""
         run: |
           BUILD_SERVICES=""
           if [ "${{ needs.resolve-context.outputs.build_web }}" = "true" ]; then
@@ -178,19 +191,17 @@ jobs:
       - name: Extract sourcemaps from builder
         if: needs.resolve-context.outputs.build_web == 'true'
         env:
-          NEXT_PUBLIC_SENTRY_DSN: https://422fa55253c74dc835e207a204dc2d16@sentry.leaperone.cn/6
+          NEXT_PUBLIC_SENTRY_DSN: ${{ vars.MULTIPOST_SENTRY_DSN }}
           NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${{ needs.resolve-context.outputs.deploy_env }}
-          SENTRY_URL: https://sentry.leaperone.cn
+          SENTRY_URL: ${{ secrets.SENTRY_INTERNAL_URL }}
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: multipost-web
           SENTRY_RELEASE: multipost-web@${{ steps.sentry.outputs.release }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
-          POSTHOG_MULTIPOST_ENV_ID: ${{ secrets.POSTHOG_MULTIPOST_ENV_ID }}
-          NEXT_PUBLIC_POSTHOG_KEY: phc_szGHmzMPL2vkmxOkrB120T4pSqq5WJWZdALmf1KCzdi
-          NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.one
+          POSTHOG_API_KEY: ""
+          POSTHOG_MULTIPOST_ENV_ID: ${{ secrets.POSTHOG_MULTIPOST_PROJECT_ID }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_MULTIPOST_PROJECT_TOKEN }}
+          NEXT_PUBLIC_POSTHOG_HOST: https://t.multipost.app
         run: |
-          printf '%s' "$SENTRY_AUTH_TOKEN" > /tmp/sentry_auth_token
           DOCKER_BUILDKIT=1 docker build \
             -f ./docker/Dockerfile \
             --target sourcemaps \
@@ -204,7 +215,6 @@ jobs:
             --build-arg POSTHOG_MULTIPOST_ENV_ID="$POSTHOG_MULTIPOST_ENV_ID" \
             --build-arg NEXT_PUBLIC_POSTHOG_KEY="$NEXT_PUBLIC_POSTHOG_KEY" \
             --build-arg NEXT_PUBLIC_POSTHOG_HOST="$NEXT_PUBLIC_POSTHOG_HOST" \
-            --secret id=sentry_auth_token,src=/tmp/sentry_auth_token \
             --progress=plain \
             --output type=local,dest=$RUNNER_TEMP/sourcemaps \
             .
@@ -213,14 +223,25 @@ jobs:
         if: needs.resolve-context.outputs.build_web == 'true'
         run: tar -cf $RUNNER_TEMP/sourcemaps.tar -C $RUNNER_TEMP/sourcemaps .
 
-      - name: Upload sourcemaps artifact
+      - name: Checkout source map transport
         if: needs.resolve-context.outputs.build_web == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/checkout@v6
         with:
-          name: multipost-web-sourcemaps-${{ steps.app-sha.outputs.sha }}
-          path: ${{ runner.temp }}/sourcemaps.tar
-          retention-days: 1
-          if-no-files-found: error
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: .release-automation
+          persist-credentials: false
+
+      - name: Stage exact-build source maps on the deployment node
+        if: needs.resolve-context.outputs.build_web == 'true'
+        env:
+          SOURCEMAP_SPOOL_HOST: ${{ secrets.DE_APP_HOST }}
+          SOURCEMAP_SPOOL_PORT: ${{ secrets.DE_APP_PORT }}
+          SOURCEMAP_SPOOL_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
+          SOURCEMAP_SPOOL_ROOT: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
+          BUNDLE_KEY: multipost/${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.app-sha.outputs.sha }}.tar
+        run: .release-automation/scripts/stage-sourcemap-bundle.sh "$RUNNER_TEMP/sourcemaps.tar" "$BUNDLE_KEY"
 
       - name: Login to Aliyun Docker Registry (Hong Kong)
         uses: docker/login-action@v3
@@ -257,35 +278,24 @@ jobs:
   upload-sourcemaps:
     needs: [resolve-context, build-and-push]
     if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.build_web == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Enable pnpm
-        run: corepack enable && corepack prepare pnpm@latest --activate
-
-      - name: Download sourcemaps
-        uses: actions/download-artifact@v4
-        with:
-          name: multipost-web-sourcemaps-${{ needs.build-and-push.outputs.app_sha }}
-          path: ./sm-artifact
-
-      - name: Unpack
-        run: mkdir -p ./sourcemaps && tar -xf ./sm-artifact/sourcemaps.tar -C ./sourcemaps
-
-      - name: Upload to Sentry
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_URL: https://sentry.leaperone.cn
-          SENTRY_ORG: leaperone
-          SENTRY_PROJECT: multipost-web
-          SENTRY_RELEASE: multipost-web@${{ needs.build-and-push.outputs.sentry_release }}
-        run: |
-          pnpm dlx @sentry/cli@2.58.5 releases new "$SENTRY_RELEASE"
-          pnpm dlx @sentry/cli@2.58.5 sourcemaps upload --release "$SENTRY_RELEASE" ./sourcemaps
-          pnpm dlx @sentry/cli@2.58.5 releases finalize "$SENTRY_RELEASE"
+    uses: ./.github/workflows/upload-telemetry-sourcemaps.yml
+    with:
+      bundle_key: multipost/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build-and-push.outputs.app_sha }}.tar
+      posthog_release_name: MultiPost
+      posthog_release_version: ${{ needs.build-and-push.outputs.sentry_release }}
+      sentry_project: multipost-web
+      sentry_release: multipost-web@${{ needs.build-and-push.outputs.sentry_release }}
+    secrets:
+      spool_host: ${{ secrets.DE_APP_HOST }}
+      spool_port: ${{ secrets.DE_APP_PORT }}
+      spool_username: ${{ secrets.DE_APP_USERNAME }}
+      spool_ssh_key: ${{ secrets.DE_APP_SSH_KEY }}
+      spool_root: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
+      posthog_personal_api_key: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+      posthog_project_id: ${{ secrets.POSTHOG_MULTIPOST_PROJECT_ID }}
+      posthog_internal_url: ${{ secrets.POSTHOG_INTERNAL_URL }}
+      sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      sentry_internal_url: ${{ secrets.SENTRY_INTERNAL_URL }}
 
   migrate-production:
     needs: [resolve-context, build-and-push]

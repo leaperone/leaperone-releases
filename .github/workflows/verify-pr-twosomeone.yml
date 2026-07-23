@@ -95,11 +95,11 @@ jobs:
           cache-from: type=gha,scope=web-twosomeone-pr
           cache-to: type=gha,scope=web-twosomeone-pr,mode=max
           build-args: |
-            POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_ENV_ID }}
-            NEXT_PUBLIC_POSTHOG_KEY=phc_zsu5WuZ4qtA4mSjJMLtsS8h4E93L6oUJxHuhHW9X4xY
+            POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
+            NEXT_PUBLIC_POSTHOG_KEY=${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
             NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
-            NEXT_PUBLIC_SENTRY_DSN=https://f2df9a6db23615aeade8adf2f42bfabf@s.2some.ren/2
-            SENTRY_URL=https://sentry.leaperone.cn
+            NEXT_PUBLIC_SENTRY_DSN=${{ vars.TWOSOMEONE_SENTRY_DSN }}
+            SENTRY_URL=${{ secrets.SENTRY_INTERNAL_URL }}
             SENTRY_ORG=leaperone
             SENTRY_PROJECT=2someone-web
             SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}

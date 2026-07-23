@@ -29,11 +29,17 @@ jobs:
 
           invalid_runs_on="$(
             rg -n '^[[:space:]]*runs-on:' .github/workflows \
-              | rg -v 'runs-on:[[:space:]]+ubuntu-latest$' || true
+              | rg -v 'runs-on:[[:space:]]+ubuntu-latest$' \
+              | rg -v 'runs-on:[[:space:]]+\[self-hosted, Linux, X64, pve\]$' || true
           )"
           if [ -n "$invalid_runs_on" ]; then
-            echo "ERROR: workflows must use the fixed GitHub-hosted runner" >&2
+            echo "ERROR: workflows must use ubuntu-latest or the organization PVE runner" >&2
             printf '%s\n' "$invalid_runs_on" >&2
+            exit 1
+          fi
+
+          if rg -n 'ph[ctx]_[A-Za-z0-9]+' .github/workflows scripts; then
+            echo "ERROR: PostHog credentials and project tokens must come from GitHub secrets or variables" >&2
             exit 1
           fi
 

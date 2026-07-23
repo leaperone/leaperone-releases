@@ -154,24 +154,24 @@ jobs:
 
           echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Validate Sentry source map credentials
+      - name: Validate frontend telemetry inputs
         env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: ${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
           SENTRY_DSN: ${{ inputs.sentry_dsn }}
+          POSTHOG_PROJECT_TOKEN: ${{ vars.POSTHOG_LEAPERONE_PROJECT_TOKEN }}
         run: |
-          test -n "$SENTRY_AUTH_TOKEN" || {
-            echo "ERROR: SENTRY_AUTH_TOKEN is required for frontend builds" >&2
-            exit 1
-          }
           test -n "$SENTRY_DSN" || {
             echo "ERROR: the component-specific Sentry DSN is required" >&2
             exit 1
           }
-          if ! [[ "$SENTRY_DSN" =~ ^https://[A-Za-z0-9._-]+@sentry\.leaperone\.cn/[0-9]+$ ]]; then
-            echo "ERROR: Sentry DSN must be a public-key DSN on sentry.leaperone.cn" >&2
+          if ! [[ "$SENTRY_DSN" =~ ^https://[A-Za-z0-9._-]+@s\.leaper\.one/[0-9]+$ ]]; then
+            echo "ERROR: Sentry DSN must use the LEAPERone product ingest domain" >&2
             exit 1
           fi
+          test -n "$POSTHOG_PROJECT_TOKEN" || {
+            echo "ERROR: POSTHOG_LEAPERONE_PROJECT_TOKEN is required for frontend builds" >&2
+            exit 1
+          }
           test -n "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY" || {
             echo "ERROR: NEXT_SERVER_ACTIONS_ENCRYPTION_KEY is required for stable Server Actions" >&2
             exit 1
@@ -182,19 +182,15 @@ jobs:
         with:
           version: "2.36.2"
 
-      - name: Prepare frontend BuildKit secrets
-        id: sentry-secret
+      - name: Prepare frontend BuildKit secret
+        id: build-secret
         env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: ${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
         run: |
           set -euo pipefail
           umask 077
-          SECRET_FILE="$RUNNER_TEMP/leaperone-${{ inputs.component }}-sentry-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           ACTIONS_SECRET_FILE="$RUNNER_TEMP/leaperone-${{ inputs.component }}-server-actions-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          echo "path=$SECRET_FILE" >> "$GITHUB_OUTPUT"
           echo "actions_path=$ACTIONS_SECRET_FILE" >> "$GITHUB_OUTPUT"
-          printf '%s' "$SENTRY_AUTH_TOKEN" > "$SECRET_FILE"
           printf '%s' "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY" > "$ACTIONS_SECRET_FILE"
 
       - name: Build selected frontend image
@@ -203,27 +199,83 @@ jobs:
           API_URL: https://api.leaper.one
           NEXT_PUBLIC_DASHBOARD_URL: https://dashboard.leaper.one
           NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.LEAPERONE_TURNSTILE_SITE_KEY }}
-          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.LEAPERONE_POSTHOG_KEY }}
-          NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.LEAPERONE_POSTHOG_HOST }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_LEAPERONE_PROJECT_TOKEN }}
+          NEXT_PUBLIC_POSTHOG_HOST: https://t.leaper.one
           NEXT_PUBLIC_GOOGLE_ANALYTICS_ID: ${{ vars.LEAPERONE_GOOGLE_ANALYTICS_ID }}
           NEXT_PUBLIC_SENTRY_DSN: ${{ inputs.sentry_dsn }}
           NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE: ${{ vars.LEAPERONE_SENTRY_TRACES_SAMPLE_RATE || '0.1' }}
           SENTRY_ORG: leaperone
-          SENTRY_URL: https://sentry.leaperone.cn
+          SENTRY_URL: ${{ secrets.SENTRY_INTERNAL_URL }}
           WWW_SENTRY_PROJECT: ${{ inputs.component == 'www' && inputs.sentry_project || '' }}
           WWW_SENTRY_RELEASE: ${{ inputs.component == 'www' && format('leaperone-www@{0}', steps.source.outputs.sha) || '' }}
           DASHBOARD_SENTRY_PROJECT: ${{ inputs.component == 'dashboard' && inputs.sentry_project || '' }}
           DASHBOARD_SENTRY_RELEASE: ${{ inputs.component == 'dashboard' && format('leaperone-dashboard@{0}', steps.source.outputs.sha) || '' }}
-          SENTRY_AUTH_TOKEN_FILE: ${{ steps.sentry-secret.outputs.path }}
-          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.sentry-secret.outputs.actions_path }}
+          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.build-secret.outputs.actions_path }}
         run: docker compose -f docker/docker-compose-build.yml build "leaperone-${COMPONENT}"
 
-      - name: Remove frontend BuildKit secrets
-        if: always() && (steps.sentry-secret.outputs.path != '' || steps.sentry-secret.outputs.actions_path != '')
+      - name: Extract exact-build source maps
         env:
-          SENTRY_AUTH_TOKEN_FILE: ${{ steps.sentry-secret.outputs.path }}
-          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.sentry-secret.outputs.actions_path }}
-        run: rm -f "$SENTRY_AUTH_TOKEN_FILE" "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE"
+          COMPONENT: ${{ inputs.component }}
+          API_URL: https://api.leaper.one
+          NEXT_PUBLIC_DASHBOARD_URL: https://dashboard.leaper.one
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.LEAPERONE_TURNSTILE_SITE_KEY }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_LEAPERONE_PROJECT_TOKEN }}
+          NEXT_PUBLIC_POSTHOG_HOST: https://t.leaper.one
+          NEXT_PUBLIC_GOOGLE_ANALYTICS_ID: ${{ vars.LEAPERONE_GOOGLE_ANALYTICS_ID }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ inputs.sentry_dsn }}
+          NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE: ${{ vars.LEAPERONE_SENTRY_TRACES_SAMPLE_RATE || '0.1' }}
+          SENTRY_URL: ${{ secrets.SENTRY_INTERNAL_URL }}
+          SENTRY_ORG: leaperone
+          SENTRY_PROJECT: ${{ inputs.sentry_project }}
+          SENTRY_RELEASE: ${{ format('{0}@{1}', inputs.sentry_project, steps.source.outputs.sha) }}
+          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.build-secret.outputs.actions_path }}
+        run: |
+          set -euo pipefail
+          DOCKER_BUILDKIT=1 docker build \
+            -f "apps/${COMPONENT}/docker/Dockerfile" \
+            --target sourcemaps \
+            --build-arg API_URL="$API_URL" \
+            --build-arg NEXT_PUBLIC_DASHBOARD_URL="$NEXT_PUBLIC_DASHBOARD_URL" \
+            --build-arg NEXT_PUBLIC_TURNSTILE_SITE_KEY="$NEXT_PUBLIC_TURNSTILE_SITE_KEY" \
+            --build-arg NEXT_PUBLIC_POSTHOG_KEY="$NEXT_PUBLIC_POSTHOG_KEY" \
+            --build-arg NEXT_PUBLIC_POSTHOG_HOST="$NEXT_PUBLIC_POSTHOG_HOST" \
+            --build-arg NEXT_PUBLIC_GOOGLE_ANALYTICS_ID="$NEXT_PUBLIC_GOOGLE_ANALYTICS_ID" \
+            --build-arg NEXT_PUBLIC_SENTRY_DSN="$NEXT_PUBLIC_SENTRY_DSN" \
+            --build-arg NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE="$NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE" \
+            --build-arg SENTRY_URL="$SENTRY_URL" \
+            --build-arg SENTRY_ORG="$SENTRY_ORG" \
+            --build-arg SENTRY_PROJECT="$SENTRY_PROJECT" \
+            --build-arg SENTRY_RELEASE="$SENTRY_RELEASE" \
+            --secret id=next_server_actions_encryption_key,src="$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE" \
+            --output type=local,dest="$RUNNER_TEMP/sourcemaps" \
+            .
+
+      - name: Pack exact-build source maps
+        run: tar -cf "$RUNNER_TEMP/sourcemaps.tar" -C "$RUNNER_TEMP/sourcemaps" .
+
+      - name: Checkout source map transport
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: .release-automation
+          persist-credentials: false
+
+      - name: Stage exact-build source maps on the deployment node
+        env:
+          SOURCEMAP_SPOOL_HOST: ${{ secrets.DE_APP_HOST }}
+          SOURCEMAP_SPOOL_PORT: ${{ secrets.DE_APP_PORT }}
+          SOURCEMAP_SPOOL_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
+          SOURCEMAP_SPOOL_ROOT: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
+          BUNDLE_KEY: leaperone-${{ inputs.component }}/${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.source.outputs.sha }}.tar
+        run: .release-automation/scripts/stage-sourcemap-bundle.sh "$RUNNER_TEMP/sourcemaps.tar" "$BUNDLE_KEY"
+
+      - name: Remove frontend BuildKit secret
+        if: always() && steps.build-secret.outputs.actions_path != ''
+        env:
+          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.build-secret.outputs.actions_path }}
+        run: rm -f "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE"
 
       - name: Login to Aliyun Docker Registry
         uses: docker/login-action@v3
@@ -259,6 +311,27 @@ jobs:
 
           echo "image_ref=$IMMUTABLE_IMAGE" >> "$GITHUB_OUTPUT"
           echo "image_digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+
+  upload-sourcemaps:
+    needs: build
+    uses: ./.github/workflows/upload-telemetry-sourcemaps.yml
+    with:
+      bundle_key: leaperone-${{ inputs.component }}/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build.outputs.source_sha }}.tar
+      posthog_release_name: ${{ format('LEAPERone {0}', inputs.component) }}
+      posthog_release_version: ${{ needs.build.outputs.source_sha }}
+      sentry_project: ${{ inputs.sentry_project }}
+      sentry_release: ${{ format('{0}@{1}', inputs.sentry_project, needs.build.outputs.source_sha) }}
+    secrets:
+      spool_host: ${{ secrets.DE_APP_HOST }}
+      spool_port: ${{ secrets.DE_APP_PORT }}
+      spool_username: ${{ secrets.DE_APP_USERNAME }}
+      spool_ssh_key: ${{ secrets.DE_APP_SSH_KEY }}
+      spool_root: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
+      posthog_personal_api_key: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+      posthog_project_id: ${{ secrets.POSTHOG_LEAPERONE_PROJECT_ID }}
+      posthog_internal_url: ${{ secrets.POSTHOG_INTERNAL_URL }}
+      sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      sentry_internal_url: ${{ secrets.SENTRY_INTERNAL_URL }}
 
   deploy-de:
     needs: build
