@@ -112,7 +112,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       app_sha: ${{ steps.app-sha.outputs.sha }}
-      sentry_release: ${{ steps.sentry.outputs.release }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -136,11 +135,6 @@ jobs:
       - name: Compute app SHA
         id: app-sha
         run: echo "sha=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Compute Sentry release
-        id: sentry
-        if: needs.resolve-context.outputs.build_web == 'true'
-        run: echo "release=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Validate telemetry inputs
         if: needs.resolve-context.outputs.build_web == 'true'
@@ -170,7 +164,7 @@ jobs:
           SENTRY_URL: ${{ secrets.SENTRY_INTERNAL_URL }}
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: multipost-web
-          SENTRY_RELEASE: multipost-web@${{ steps.sentry.outputs.release }}
+          SENTRY_RELEASE: multipost-web@${{ steps.app-sha.outputs.sha }}
           # Sentry/PostHog IDs are injected into the exact build, but uploads are
           # owned by the PVE job below. Keep this empty to prevent build-time upload.
           SENTRY_AUTH_TOKEN: ""
@@ -196,7 +190,7 @@ jobs:
           SENTRY_URL: ${{ secrets.SENTRY_INTERNAL_URL }}
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: multipost-web
-          SENTRY_RELEASE: multipost-web@${{ steps.sentry.outputs.release }}
+          SENTRY_RELEASE: multipost-web@${{ steps.app-sha.outputs.sha }}
           POSTHOG_API_KEY: ""
           POSTHOG_MULTIPOST_ENV_ID: ${{ secrets.POSTHOG_MULTIPOST_PROJECT_ID }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_MULTIPOST_PROJECT_TOKEN }}
@@ -282,9 +276,9 @@ jobs:
     with:
       bundle_key: multipost/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build-and-push.outputs.app_sha }}.tar
       posthog_release_name: MultiPost
-      posthog_release_version: ${{ needs.build-and-push.outputs.sentry_release }}
+      posthog_release_version: ${{ needs.build-and-push.outputs.app_sha }}
       sentry_project: multipost-web
-      sentry_release: multipost-web@${{ needs.build-and-push.outputs.sentry_release }}
+      sentry_release: multipost-web@${{ needs.build-and-push.outputs.app_sha }}
     secrets:
       spool_host: ${{ secrets.DE_APP_HOST }}
       spool_port: ${{ secrets.DE_APP_PORT }}
