@@ -251,7 +251,7 @@ jobs:
             .
 
       - name: Pack exact-build source maps
-        run: tar -cf "$RUNNER_TEMP/sourcemaps.tar" -C "$RUNNER_TEMP/sourcemaps" .
+        run: tar -czf "$RUNNER_TEMP/sourcemaps.tar" -C "$RUNNER_TEMP/sourcemaps" .
 
       - name: Checkout source map transport
         uses: actions/checkout@v6
