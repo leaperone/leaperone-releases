@@ -366,12 +366,12 @@ jobs:
           path: .release-automation
           persist-credentials: false
 
-      - name: Stage exact-build source maps on PVE
+      - name: Stage exact-build source maps on DE spool
         env:
-          SOURCEMAP_SPOOL_HOST: ${{ secrets.PVE_APP_HOST }}
-          SOURCEMAP_SPOOL_PORT: ${{ secrets.PVE_APP_PORT }}
-          SOURCEMAP_SPOOL_USERNAME: ${{ secrets.PVE_APP_USERNAME }}
-          SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.PVE_APP_SSH_KEY }}
+          SOURCEMAP_SPOOL_HOST: ${{ secrets.DE_APP_HOST }}
+          SOURCEMAP_SPOOL_PORT: ${{ vars.DE_APP_PORT || '22' }}
+          SOURCEMAP_SPOOL_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
           SOURCEMAP_SPOOL_ROOT: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
           BUNDLE_KEY: twosomeone/${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.app-sha.outputs.sha }}.tar
         run: .release-automation/scripts/stage-sourcemap-bundle.sh sourcemaps.tar "$BUNDLE_KEY"
@@ -575,9 +575,9 @@ jobs:
       sentry_project: 2someone-web
       sentry_release: 2someone-web@${{ needs.build-and-push.outputs.sentry_release }}
     secrets:
-      spool_host: ${{ secrets.PVE_APP_HOST_INTERNAL }}
-      spool_username: ${{ secrets.PVE_APP_USERNAME }}
-      spool_ssh_key: ${{ secrets.PVE_APP_SSH_KEY }}
+      spool_host: ${{ secrets.DE_APP_HOST }}
+      spool_username: ${{ secrets.DE_APP_USERNAME }}
+      spool_ssh_key: ${{ secrets.DE_APP_SSH_KEY }}
       spool_root: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
       posthog_personal_api_key: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
       posthog_project_id: ${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
