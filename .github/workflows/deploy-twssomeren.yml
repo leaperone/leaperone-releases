@@ -287,7 +287,6 @@ jobs:
       sentry_release: 2someone-web@${{ needs.build-and-deploy.outputs.source_sha }}
     secrets:
       spool_host: ${{ secrets.PVE_APP_HOST_INTERNAL }}
-      spool_port: ${{ secrets.PVE_APP_PORT_INTERNAL }}
       spool_username: ${{ secrets.PVE_APP_USERNAME }}
       spool_ssh_key: ${{ secrets.PVE_APP_SSH_KEY }}
       spool_root: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}

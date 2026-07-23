@@ -264,7 +264,7 @@ jobs:
       - name: Stage exact-build source maps on the deployment node
         env:
           SOURCEMAP_SPOOL_HOST: ${{ secrets.DE_APP_HOST }}
-          SOURCEMAP_SPOOL_PORT: ${{ secrets.DE_APP_PORT }}
+          SOURCEMAP_SPOOL_PORT: ${{ vars.DE_APP_PORT || '22' }}
           SOURCEMAP_SPOOL_USERNAME: ${{ secrets.DE_APP_USERNAME }}
           SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
           SOURCEMAP_SPOOL_ROOT: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
@@ -323,7 +323,6 @@ jobs:
       sentry_release: ${{ format('{0}@{1}', inputs.sentry_project, needs.build.outputs.source_sha) }}
     secrets:
       spool_host: ${{ secrets.DE_APP_HOST }}
-      spool_port: ${{ secrets.DE_APP_PORT }}
       spool_username: ${{ secrets.DE_APP_USERNAME }}
       spool_ssh_key: ${{ secrets.DE_APP_SSH_KEY }}
       spool_root: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
