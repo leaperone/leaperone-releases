@@ -174,7 +174,7 @@ jobs:
 
       - name: Pack exact-build source maps
         if: steps.set-ref.outputs.is_deployable == 'true'
-        run: tar -cf "$RUNNER_TEMP/sourcemaps.tar" -C "$RUNNER_TEMP/sourcemaps/next" .
+        run: tar -czf "$RUNNER_TEMP/sourcemaps.tar" -C "$RUNNER_TEMP/sourcemaps/next" .
 
       - name: Checkout source map transport
         if: steps.set-ref.outputs.is_deployable == 'true'

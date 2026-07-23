@@ -356,7 +356,7 @@ jobs:
             next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
 
       - name: Pack source maps (avoid colon-in-filename limitation)
-        run: tar -cf sourcemaps.tar -C ./sourcemaps/next .
+        run: tar -czf sourcemaps.tar -C ./sourcemaps/next .
 
       - name: Checkout source map transport
         uses: actions/checkout@v6
