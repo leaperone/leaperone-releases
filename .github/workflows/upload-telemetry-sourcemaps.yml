@@ -1,0 +1,140 @@
+name: Upload telemetry source maps from PVE
+
+on:
+  workflow_call:
+    inputs:
+      bundle_key:
+        required: true
+        type: string
+      posthog_release_name:
+        required: true
+        type: string
+      posthog_release_version:
+        required: true
+        type: string
+      sentry_project:
+        required: true
+        type: string
+      sentry_release:
+        required: true
+        type: string
+    secrets:
+      spool_host:
+        required: true
+      spool_port:
+        required: true
+      spool_username:
+        required: true
+      spool_ssh_key:
+        required: true
+      spool_root:
+        required: true
+      posthog_personal_api_key:
+        required: true
+      posthog_project_id:
+        required: true
+      posthog_internal_url:
+        required: true
+      sentry_auth_token:
+        required: true
+      sentry_internal_url:
+        required: true
+
+jobs:
+  upload:
+    runs-on: [self-hosted, Linux, X64, pve]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout release automation
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Set up pnpm
+        run: corepack enable && corepack prepare pnpm@11.5.2 --activate
+
+      - name: Fetch exact-build source maps
+        env:
+          SOURCEMAP_SPOOL_HOST: ${{ secrets.spool_host }}
+          SOURCEMAP_SPOOL_PORT: ${{ secrets.spool_port }}
+          SOURCEMAP_SPOOL_USERNAME: ${{ secrets.spool_username }}
+          SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.spool_ssh_key }}
+          SOURCEMAP_SPOOL_ROOT: ${{ secrets.spool_root }}
+          BUNDLE_KEY: ${{ inputs.bundle_key }}
+        run: |
+          set -euo pipefail
+          WORK_DIR="$RUNNER_TEMP/telemetry-sourcemaps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          install -d -m 700 "$WORK_DIR"
+          scripts/fetch-sourcemap-bundle.sh "$BUNDLE_KEY" "$WORK_DIR/sourcemaps.tar"
+          scripts/extract-sourcemap-bundle.sh "$WORK_DIR/sourcemaps.tar" "$WORK_DIR/files"
+
+      - name: Upload to internal PostHog and Sentry
+        env:
+          SOURCE_MAP_DIR: ${{ runner.temp }}/telemetry-sourcemaps-${{ github.run_id }}-${{ github.run_attempt }}/files
+          POSTHOG_CLI_API_KEY: ${{ secrets.posthog_personal_api_key }}
+          POSTHOG_CLI_PROJECT_ID: ${{ secrets.posthog_project_id }}
+          POSTHOG_CLI_HOST: ${{ secrets.posthog_internal_url }}
+          POSTHOG_RELEASE_NAME: ${{ inputs.posthog_release_name }}
+          POSTHOG_RELEASE_VERSION: ${{ inputs.posthog_release_version }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.sentry_auth_token }}
+          SENTRY_URL: ${{ secrets.sentry_internal_url }}
+          SENTRY_ORG: leaperone
+          SENTRY_PROJECT: ${{ inputs.sentry_project }}
+          SENTRY_RELEASE: ${{ inputs.sentry_release }}
+        run: |
+          set -euo pipefail
+          : "${POSTHOG_CLI_API_KEY:?missing PostHog API key}"
+          : "${POSTHOG_CLI_PROJECT_ID:?missing PostHog project ID}"
+          : "${POSTHOG_CLI_HOST:?missing internal PostHog URL}"
+          : "${SENTRY_AUTH_TOKEN:?missing Sentry auth token}"
+          : "${SENTRY_URL:?missing internal Sentry URL}"
+          if ! [[ "$POSTHOG_CLI_PROJECT_ID" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: PostHog project ID must be numeric" >&2
+            exit 1
+          fi
+
+          pnpm dlx @posthog/cli@0.8.4 sourcemap upload \
+            --directory "$SOURCE_MAP_DIR" \
+            --release-name "$POSTHOG_RELEASE_NAME" \
+            --release-version "$POSTHOG_RELEASE_VERSION" &
+          posthog_pid=$!
+
+          (
+            if ! pnpm dlx @sentry/cli@2.58.5 releases info "$SENTRY_RELEASE" >/dev/null 2>&1; then
+              pnpm dlx @sentry/cli@2.58.5 releases new "$SENTRY_RELEASE"
+            fi
+            pnpm dlx @sentry/cli@2.58.5 sourcemaps upload \
+              --release "$SENTRY_RELEASE" \
+              "$SOURCE_MAP_DIR"
+            pnpm dlx @sentry/cli@2.58.5 releases finalize "$SENTRY_RELEASE"
+          ) &
+          sentry_pid=$!
+
+          posthog_status=0
+          sentry_status=0
+          wait "$posthog_pid" || posthog_status=$?
+          wait "$sentry_pid" || sentry_status=$?
+          if [ "$posthog_status" -ne 0 ] || [ "$sentry_status" -ne 0 ]; then
+            echo "ERROR: one or more source map uploads failed" >&2
+            exit 1
+          fi
+
+      - name: Remove uploaded bundle from spool
+        env:
+          SOURCEMAP_SPOOL_HOST: ${{ secrets.spool_host }}
+          SOURCEMAP_SPOOL_PORT: ${{ secrets.spool_port }}
+          SOURCEMAP_SPOOL_USERNAME: ${{ secrets.spool_username }}
+          SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.spool_ssh_key }}
+          SOURCEMAP_SPOOL_ROOT: ${{ secrets.spool_root }}
+          BUNDLE_KEY: ${{ inputs.bundle_key }}
+        run: scripts/remove-sourcemap-bundle.sh "$BUNDLE_KEY"
+
+      - name: Remove local source maps
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/telemetry-sourcemaps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
