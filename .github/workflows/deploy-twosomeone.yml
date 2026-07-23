@@ -198,7 +198,7 @@ jobs:
     if: needs.prepare.outputs.is_deployable == 'true'
     runs-on: ubuntu-latest
     concurrency:
-      group: deploy-twosomeone-deployable
+      group: deploy-twosomeone-deployable-${{ needs.prepare.outputs.deploy_env }}
       cancel-in-progress: false
     outputs:
       app_sha: ${{ steps.app-sha.outputs.sha }}
