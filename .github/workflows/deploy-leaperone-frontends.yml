@@ -91,7 +91,7 @@ jobs:
           host: ${{ secrets.DE_APP_HOST }}
           username: ${{ secrets.DE_APP_USERNAME }}
           key: ${{ secrets.DE_APP_SSH_KEY }}
-          port: ${{ secrets.DE_APP_PORT }}
+          port: ${{ vars.DE_APP_PORT || '22' }}
           source: "compose/leaperone-frontend/*"
           target: "${{ secrets.LEAPERONE_CUTOVER_ROOT }}/${{ github.run_id }}-${{ github.run_attempt }}"
           strip_components: 2
@@ -112,7 +112,7 @@ jobs:
           host: ${{ secrets.DE_APP_HOST }}
           username: ${{ secrets.DE_APP_USERNAME }}
           key: ${{ secrets.DE_APP_SSH_KEY }}
-          port: ${{ secrets.DE_APP_PORT }}
+          port: ${{ vars.DE_APP_PORT || '22' }}
           command_timeout: 10m
           envs: SOURCE_SHA,WWW_IMAGE_REF,WWW_IMAGE_DIGEST,DASHBOARD_IMAGE_REF,DASHBOARD_IMAGE_DIGEST,RELEASES_SHA,LEAPERONE_CUTOVER_ROOT,DEPLOY_STATE_ROOT
           script: |

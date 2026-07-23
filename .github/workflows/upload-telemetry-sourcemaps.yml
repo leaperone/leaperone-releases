@@ -18,10 +18,12 @@ on:
       sentry_release:
         required: true
         type: string
+      spool_port:
+        required: false
+        type: string
+        default: "22"
     secrets:
       spool_host:
-        required: true
-      spool_port:
         required: true
       spool_username:
         required: true
@@ -61,7 +63,7 @@ jobs:
       - name: Fetch exact-build source maps
         env:
           SOURCEMAP_SPOOL_HOST: ${{ secrets.spool_host }}
-          SOURCEMAP_SPOOL_PORT: ${{ secrets.spool_port }}
+          SOURCEMAP_SPOOL_PORT: ${{ inputs.spool_port }}
           SOURCEMAP_SPOOL_USERNAME: ${{ secrets.spool_username }}
           SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.spool_ssh_key }}
           SOURCEMAP_SPOOL_ROOT: ${{ secrets.spool_root }}
@@ -127,7 +129,7 @@ jobs:
       - name: Remove uploaded bundle from spool
         env:
           SOURCEMAP_SPOOL_HOST: ${{ secrets.spool_host }}
-          SOURCEMAP_SPOOL_PORT: ${{ secrets.spool_port }}
+          SOURCEMAP_SPOOL_PORT: ${{ inputs.spool_port }}
           SOURCEMAP_SPOOL_USERNAME: ${{ secrets.spool_username }}
           SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.spool_ssh_key }}
           SOURCEMAP_SPOOL_ROOT: ${{ secrets.spool_root }}

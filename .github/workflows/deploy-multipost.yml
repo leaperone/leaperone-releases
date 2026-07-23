@@ -230,7 +230,7 @@ jobs:
         if: needs.resolve-context.outputs.build_web == 'true'
         env:
           SOURCEMAP_SPOOL_HOST: ${{ secrets.DE_APP_HOST }}
-          SOURCEMAP_SPOOL_PORT: ${{ secrets.DE_APP_PORT }}
+          SOURCEMAP_SPOOL_PORT: ${{ vars.DE_APP_PORT || '22' }}
           SOURCEMAP_SPOOL_USERNAME: ${{ secrets.DE_APP_USERNAME }}
           SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
           SOURCEMAP_SPOOL_ROOT: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
@@ -281,7 +281,6 @@ jobs:
       sentry_release: multipost-web@${{ needs.build-and-push.outputs.app_sha }}
     secrets:
       spool_host: ${{ secrets.DE_APP_HOST }}
-      spool_port: ${{ secrets.DE_APP_PORT }}
       spool_username: ${{ secrets.DE_APP_USERNAME }}
       spool_ssh_key: ${{ secrets.DE_APP_SSH_KEY }}
       spool_root: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
@@ -315,7 +314,7 @@ jobs:
           DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
           DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
           DE_APP_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
-          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+          DE_APP_PORT: ${{ vars.DE_APP_PORT || '22' }}
         run: |
           test -n "$DE_APP_HOST" || { echo "DE_APP_HOST required"; exit 1; }
           test -n "$DE_APP_USERNAME" || { echo "DE_APP_USERNAME required"; exit 1; }
