@@ -111,8 +111,8 @@ jobs:
       - name: Build Docker images
         env:
           POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
-          POSTHOG_CLI_PROJECT_ID: ${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
-          POSTHOG_2SOMEONE_ENV_ID: ${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
+          POSTHOG_CLI_PROJECT_ID: ${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
+          POSTHOG_2SOMEONE_ENV_ID: ${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.ren
           NEXT_PUBLIC_SENTRY_DSN: ${{ vars.TWOSOMEREN_SENTRY_DSN }}
@@ -129,8 +129,8 @@ jobs:
         if: steps.set-ref.outputs.is_deployable == 'true'
         env:
           POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
-          POSTHOG_CLI_PROJECT_ID: ${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
-          POSTHOG_2SOMEONE_ENV_ID: ${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
+          POSTHOG_CLI_PROJECT_ID: ${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
+          POSTHOG_2SOMEONE_ENV_ID: ${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.ren
           NEXT_PUBLIC_SENTRY_DSN: ${{ vars.TWOSOMEREN_SENTRY_DSN }}
@@ -283,6 +283,7 @@ jobs:
       bundle_key: twosomeren/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build-and-deploy.outputs.source_sha }}.tar
       posthog_release_name: 2SOMEone
       posthog_release_version: ${{ needs.build-and-deploy.outputs.source_sha }}
+      posthog_project_id: ${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
       sentry_project: 2someone-web
       sentry_release: 2someone-web@${{ needs.build-and-deploy.outputs.source_sha }}
     secrets:
@@ -291,7 +292,6 @@ jobs:
       spool_ssh_key: ${{ secrets.PVE_APP_SSH_KEY }}
       spool_root: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
       posthog_personal_api_key: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
-      posthog_project_id: ${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
       posthog_internal_url: ${{ secrets.POSTHOG_INTERNAL_URL }}
       sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
       sentry_internal_url: ${{ secrets.SENTRY_INTERNAL_URL }}

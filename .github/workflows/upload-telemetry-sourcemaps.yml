@@ -12,6 +12,9 @@ on:
       posthog_release_version:
         required: true
         type: string
+      posthog_project_id:
+        required: true
+        type: string
       sentry_project:
         required: true
         type: string
@@ -32,8 +35,6 @@ on:
       spool_root:
         required: true
       posthog_personal_api_key:
-        required: true
-      posthog_project_id:
         required: true
       posthog_internal_url:
         required: true
@@ -68,8 +69,23 @@ jobs:
           SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.spool_ssh_key }}
           SOURCEMAP_SPOOL_ROOT: ${{ secrets.spool_root }}
           BUNDLE_KEY: ${{ inputs.bundle_key }}
+          POSTHOG_PROJECT_ID: ${{ inputs.posthog_project_id }}
+          POSTHOG_RELEASE_VERSION: ${{ inputs.posthog_release_version }}
+          SENTRY_RELEASE: ${{ inputs.sentry_release }}
         run: |
           set -euo pipefail
+          : "${BUNDLE_KEY:?missing source map bundle key}"
+          : "${POSTHOG_PROJECT_ID:?missing PostHog project ID}"
+          : "${POSTHOG_RELEASE_VERSION:?missing PostHog release version}"
+          : "${SENTRY_RELEASE:?missing Sentry release}"
+          if ! [[ "$POSTHOG_PROJECT_ID" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: PostHog project ID must be numeric" >&2
+            exit 1
+          fi
+          if ! [[ "$BUNDLE_KEY" =~ /[0-9]+-[0-9]+-[0-9a-f]{7,40}\.tar$ ]]; then
+            echo "ERROR: source map bundle key must end with run-attempt-GitSHA.tar" >&2
+            exit 1
+          fi
           WORK_DIR="$RUNNER_TEMP/telemetry-sourcemaps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           install -d -m 700 "$WORK_DIR"
           scripts/fetch-sourcemap-bundle.sh "$BUNDLE_KEY" "$WORK_DIR/sourcemaps.tar"
@@ -79,7 +95,7 @@ jobs:
         env:
           SOURCE_MAP_DIR: ${{ runner.temp }}/telemetry-sourcemaps-${{ github.run_id }}-${{ github.run_attempt }}/files
           POSTHOG_CLI_API_KEY: ${{ secrets.posthog_personal_api_key }}
-          POSTHOG_CLI_PROJECT_ID: ${{ secrets.posthog_project_id }}
+          POSTHOG_CLI_PROJECT_ID: ${{ inputs.posthog_project_id }}
           POSTHOG_CLI_HOST: ${{ secrets.posthog_internal_url }}
           POSTHOG_RELEASE_NAME: ${{ inputs.posthog_release_name }}
           POSTHOG_RELEASE_VERSION: ${{ inputs.posthog_release_version }}

@@ -314,7 +314,7 @@ jobs:
           cache-from: type=gha,scope=web-twosomeone-deploy
           cache-to: type=gha,scope=web-twosomeone-deploy,mode=max,ignore-error=true
           build-args: |
-            POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
+            POSTHOG_2SOMEONE_ENV_ID=${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
             NEXT_PUBLIC_POSTHOG_KEY=${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
             NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
             NEXT_PUBLIC_SENTRY_DSN=${{ vars.TWOSOMEONE_SENTRY_DSN }}
@@ -327,7 +327,7 @@ jobs:
           secrets: |
             sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
             posthog_personal_api_key=${{ secrets.POSTHOG_PERSONAL_API_KEY }}
-            posthog_cli_project_id=${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
+            posthog_cli_project_id=${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
             next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
 
       - name: Extract source maps from same buildkit cache
@@ -338,7 +338,7 @@ jobs:
           target: sourcemaps
           outputs: type=local,dest=./sourcemaps
           build-args: |
-            POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
+            POSTHOG_2SOMEONE_ENV_ID=${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
             NEXT_PUBLIC_POSTHOG_KEY=${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
             NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
             NEXT_PUBLIC_SENTRY_DSN=${{ vars.TWOSOMEONE_SENTRY_DSN }}
@@ -351,7 +351,7 @@ jobs:
           secrets: |
             sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
             posthog_personal_api_key=${{ secrets.POSTHOG_PERSONAL_API_KEY }}
-            posthog_cli_project_id=${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
+            posthog_cli_project_id=${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
             next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
 
       - name: Pack source maps (avoid colon-in-filename limitation)
@@ -571,6 +571,7 @@ jobs:
       bundle_key: twosomeone/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build-and-push.outputs.app_sha }}.tar
       posthog_release_name: 2SOMEone
       posthog_release_version: ${{ needs.build-and-push.outputs.app_sha }}
+      posthog_project_id: ${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
       sentry_project: 2someone-web
       sentry_release: 2someone-web@${{ needs.build-and-push.outputs.app_sha }}
     secrets:
@@ -579,7 +580,6 @@ jobs:
       spool_ssh_key: ${{ secrets.DE_APP_SSH_KEY }}
       spool_root: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
       posthog_personal_api_key: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
-      posthog_project_id: ${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
       posthog_internal_url: ${{ secrets.POSTHOG_INTERNAL_URL }}
       sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
       sentry_internal_url: ${{ secrets.SENTRY_INTERNAL_URL }}

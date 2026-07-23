@@ -156,7 +156,7 @@ jobs:
           # Build-time ID injection is offline. The personal API key is reserved
           # for the PVE upload job and must not enter image build arguments.
           POSTHOG_API_KEY: ""
-          POSTHOG_MULTIPOST_ENV_ID: ${{ secrets.POSTHOG_MULTIPOST_PROJECT_ID }}
+          POSTHOG_MULTIPOST_ENV_ID: ${{ vars.POSTHOG_MULTIPOST_PROJECT_ID }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_MULTIPOST_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_HOST: https://t.multipost.app
           NEXT_PUBLIC_SENTRY_DSN: ${{ vars.MULTIPOST_SENTRY_DSN }}
@@ -192,7 +192,7 @@ jobs:
           SENTRY_PROJECT: multipost-web
           SENTRY_RELEASE: multipost-web@${{ steps.app-sha.outputs.sha }}
           POSTHOG_API_KEY: ""
-          POSTHOG_MULTIPOST_ENV_ID: ${{ secrets.POSTHOG_MULTIPOST_PROJECT_ID }}
+          POSTHOG_MULTIPOST_ENV_ID: ${{ vars.POSTHOG_MULTIPOST_PROJECT_ID }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_MULTIPOST_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_HOST: https://t.multipost.app
         run: |
@@ -277,6 +277,7 @@ jobs:
       bundle_key: multipost/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build-and-push.outputs.app_sha }}.tar
       posthog_release_name: MultiPost
       posthog_release_version: ${{ needs.build-and-push.outputs.app_sha }}
+      posthog_project_id: ${{ vars.POSTHOG_MULTIPOST_PROJECT_ID }}
       sentry_project: multipost-web
       sentry_release: multipost-web@${{ needs.build-and-push.outputs.app_sha }}
     secrets:
@@ -285,7 +286,6 @@ jobs:
       spool_ssh_key: ${{ secrets.DE_APP_SSH_KEY }}
       spool_root: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
       posthog_personal_api_key: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
-      posthog_project_id: ${{ secrets.POSTHOG_MULTIPOST_PROJECT_ID }}
       posthog_internal_url: ${{ secrets.POSTHOG_INTERNAL_URL }}
       sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
       sentry_internal_url: ${{ secrets.SENTRY_INTERNAL_URL }}
