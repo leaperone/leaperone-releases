@@ -184,7 +184,7 @@ jobs:
         env:
           DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
           DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
-          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+          DE_APP_PORT: ${{ vars.DE_APP_PORT || '22' }}
           DE_APP_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
         run: |
           set -euo pipefail

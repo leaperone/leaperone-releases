@@ -74,7 +74,7 @@ jobs:
           host: ${{ secrets.DE_APP_HOST }}
           username: ${{ secrets.DE_APP_USERNAME }}
           key: ${{ secrets.DE_APP_SSH_KEY }}
-          port: ${{ secrets.DE_APP_PORT }}
+          port: ${{ vars.DE_APP_PORT || '22' }}
           source: "compose/${{ inputs.project }}/*"
           target: "${{ secrets.APP_DEPLOY_ROOT }}/${{ inputs.project }}/${{ inputs.env }}"
           strip_components: 2
@@ -86,7 +86,7 @@ jobs:
           host: ${{ secrets.DE_APP_HOST }}
           username: ${{ secrets.DE_APP_USERNAME }}
           key: ${{ secrets.DE_APP_SSH_KEY }}
-          port: ${{ secrets.DE_APP_PORT }}
+          port: ${{ vars.DE_APP_PORT || '22' }}
           source: "scripts/deploy.sh"
           target: "${{ secrets.APP_DEPLOY_ROOT }}/${{ inputs.project }}/${{ inputs.env }}/.release-tools/${{ github.run_id }}-${{ github.run_attempt }}"
           strip_components: 1
@@ -108,7 +108,7 @@ jobs:
           host: ${{ secrets.DE_APP_HOST }}
           username: ${{ secrets.DE_APP_USERNAME }}
           key: ${{ secrets.DE_APP_SSH_KEY }}
-          port: ${{ secrets.DE_APP_PORT }}
+          port: ${{ vars.DE_APP_PORT || '22' }}
           command_timeout: 20m
           envs: DEPLOY_COMPONENTS,IMAGE_SOURCE_SHA,IMAGE_REF,IMAGE_DIGEST,DEPLOYMENT_MODE,RELEASES_SHA,APP_DEPLOY_ROOT,DEPLOY_STATE_ROOT,ALIPAY_CERT_HOST_DIR
           script: |
