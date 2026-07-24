@@ -33,6 +33,7 @@ jobs:
       is_tag: ${{ steps.set-ref.outputs.is_tag }}
       deploy_env: ${{ steps.set-ref.outputs.deploy_env }}
       source_sha: ${{ steps.set-ref.outputs.source_sha }}
+      app_sha: ${{ steps.source-coordinate.outputs.app_sha }}
       pointed_tag: ${{ steps.detect-tag.outputs.pointed_tag }}
       components: ${{ steps.set-ref.outputs.components }}
     steps:
@@ -193,6 +194,33 @@ jobs:
           done
           echo "::warning::Timed out after 60min waiting for tag $POINTED_TAG; proceeding."
 
+      - name: Checkout exact 2SOMEone source coordinate
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/2SOMEone
+          ref: ${{ steps.set-ref.outputs.source_sha || steps.set-ref.outputs.ref }}
+
+      - name: Resolve exact app SHA
+        id: source-coordinate
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        env:
+          EXPECTED_SOURCE_SHA: ${{ steps.set-ref.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          app_sha="$(git rev-parse --short=7 HEAD)"
+          if ! [[ "$source_sha" =~ ^[0-9a-f]{40}$ && "$app_sha" =~ ^[0-9a-f]{7}$ ]]; then
+            echo "ERROR: invalid Git source coordinate" >&2
+            exit 1
+          fi
+          if [ -n "$EXPECTED_SOURCE_SHA" ] && [ "$source_sha" != "$EXPECTED_SOURCE_SHA" ]; then
+            echo "ERROR: checked out source does not match repository_dispatch source_sha" >&2
+            exit 1
+          fi
+          echo "app_sha=$app_sha" >> "$GITHUB_OUTPUT"
+
   build-and-push:
     needs: prepare
     if: needs.prepare.outputs.is_deployable == 'true'
@@ -200,15 +228,13 @@ jobs:
     concurrency:
       group: deploy-twosomeone-deployable-${{ needs.prepare.outputs.deploy_env }}
       cancel-in-progress: false
-    outputs:
-      app_sha: ${{ steps.app-sha.outputs.sha }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/2SOMEone
-          ref: ${{ needs.prepare.outputs.ref }}
+          ref: ${{ needs.prepare.outputs.source_sha || needs.prepare.outputs.ref }}
 
       - name: Check Skip CI
         run: |
@@ -219,7 +245,16 @@ jobs:
 
       - name: Compute app SHA
         id: app-sha
-        run: echo "sha=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
+        env:
+          EXPECTED_APP_SHA: ${{ needs.prepare.outputs.app_sha }}
+        run: |
+          set -euo pipefail
+          app_sha="$(git rev-parse --short=7 HEAD)"
+          if [ "$app_sha" != "$EXPECTED_APP_SHA" ]; then
+            echo "ERROR: build checkout SHA does not match prepare job coordinate" >&2
+            exit 1
+          fi
+          echo "sha=$app_sha" >> "$GITHUB_OUTPUT"
 
       - name: Set Sentry release
         id: sentry
@@ -568,12 +603,12 @@ jobs:
     if: needs.prepare.outputs.is_deployable == 'true'
     uses: ./.github/workflows/upload-telemetry-sourcemaps.yml
     with:
-      bundle_key: twosomeone/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build-and-push.outputs.app_sha }}.tar
+      bundle_key: twosomeone/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.prepare.outputs.app_sha }}.tar
       posthog_release_name: 2SOMEone
-      posthog_release_version: ${{ needs.build-and-push.outputs.app_sha }}
+      posthog_release_version: ${{ needs.prepare.outputs.app_sha }}
       posthog_project_id: ${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
       sentry_project: 2someone-web
-      sentry_release: 2someone-web@${{ needs.build-and-push.outputs.app_sha }}
+      sentry_release: 2someone-web@${{ needs.prepare.outputs.app_sha }}
     secrets:
       spool_host: ${{ secrets.DE_APP_HOST }}
       spool_username: ${{ secrets.DE_APP_USERNAME }}
