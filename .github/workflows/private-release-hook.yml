@@ -1,0 +1,142 @@
+name: Private release hook
+
+on:
+  workflow_call:
+    inputs:
+      artifact:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
+      image_ref:
+        required: true
+        type: string
+      release_run_id:
+        required: true
+        type: string
+    secrets:
+      dispatch_repository:
+        required: true
+      dispatch_workflow:
+        required: true
+      dispatch_token:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    name: Invoke private release hook
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - name: Validate release coordinates
+        env:
+          ARTIFACT: ${{ inputs.artifact }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          IMAGE_REF: ${{ inputs.image_ref }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+        run: |
+          set -euo pipefail
+          case "$ARTIFACT" in web|backend) ;; *) exit 2 ;; esac
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 2
+          [[ "$RELEASE_RUN_ID" =~ ^[0-9]{1,20}$ ]] || exit 2
+          [[ "$IMAGE_REF" =~ ^[^[:space:]]+@sha256:[0-9a-f]{64}$ ]] || exit 2
+
+      - name: Dispatch private release workflow
+        id: dispatch
+        env:
+          DISPATCH_REPOSITORY: ${{ secrets.dispatch_repository }}
+          DISPATCH_WORKFLOW: ${{ secrets.dispatch_workflow }}
+          DISPATCH_TOKEN: ${{ secrets.dispatch_token }}
+          ARTIFACT: ${{ inputs.artifact }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          IMAGE_REF: ${{ inputs.image_ref }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$DISPATCH_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 2
+          [[ "$DISPATCH_WORKFLOW" =~ ^[A-Za-z0-9_.-]+\.ya?ml$ ]] || exit 2
+
+          payload="$(
+            jq -cn \
+              --arg component "$ARTIFACT" \
+              --arg source_sha "$SOURCE_SHA" \
+              --arg image_ref "$IMAGE_REF" \
+              --arg release_run_id "$RELEASE_RUN_ID" \
+              '{
+                ref: "main",
+                inputs: {
+                  component: $component,
+                  source_sha: $source_sha,
+                  image_ref: $image_ref,
+                  release_run_id: $release_run_id
+                }
+              }'
+          )"
+          response="$(
+            curl \
+              --silent \
+              --show-error \
+              --fail \
+              --request POST \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $DISPATCH_TOKEN" \
+              --header "X-GitHub-Api-Version: 2026-03-10" \
+              --data "$payload" \
+              "https://api.github.com/repos/$DISPATCH_REPOSITORY/actions/workflows/$DISPATCH_WORKFLOW/dispatches"
+          )"
+          workflow_run_id="$(jq -r '.workflow_run_id // empty' <<<"$response")"
+          [[ "$workflow_run_id" =~ ^[0-9]+$ ]] || {
+            echo "ERROR: private workflow dispatch did not return a run ID" >&2
+            exit 1
+          }
+          printf 'workflow_run_id=%s\n' "$workflow_run_id" >>"$GITHUB_OUTPUT"
+          echo "Private release workflow accepted."
+
+      - name: Wait for private release result
+        env:
+          DISPATCH_REPOSITORY: ${{ secrets.dispatch_repository }}
+          DISPATCH_TOKEN: ${{ secrets.dispatch_token }}
+          WORKFLOW_RUN_ID: ${{ steps.dispatch.outputs.workflow_run_id }}
+        run: |
+          set -euo pipefail
+          previous_status=''
+          for _ in $(seq 1 360); do
+            response="$(
+              curl \
+                --silent \
+                --show-error \
+                --fail \
+                --header "Accept: application/vnd.github+json" \
+                --header "Authorization: Bearer $DISPATCH_TOKEN" \
+                --header "X-GitHub-Api-Version: 2026-03-10" \
+                "https://api.github.com/repos/$DISPATCH_REPOSITORY/actions/runs/$WORKFLOW_RUN_ID"
+            )"
+            status="$(jq -r '.status // empty' <<<"$response")"
+            conclusion="$(jq -r '.conclusion // empty' <<<"$response")"
+            case "$status" in
+              queued|in_progress|waiting|pending|requested) ;;
+              completed)
+                if [ "$conclusion" = success ]; then
+                  echo "Private release workflow succeeded."
+                  exit 0
+                fi
+                echo "ERROR: private release workflow concluded: $conclusion" >&2
+                exit 1
+                ;;
+              *)
+                echo "ERROR: unexpected private workflow status" >&2
+                exit 1
+                ;;
+            esac
+            if [ "$status" != "$previous_status" ]; then
+              echo "Private release workflow status: $status"
+              previous_status="$status"
+            fi
+            sleep 10
+          done
+          echo "ERROR: timed out waiting for private release workflow" >&2
+          exit 1
