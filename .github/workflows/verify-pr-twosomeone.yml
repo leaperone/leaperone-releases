@@ -95,7 +95,7 @@ jobs:
           cache-from: type=gha,scope=web-twosomeone-pr
           cache-to: type=gha,scope=web-twosomeone-pr,mode=max
           build-args: |
-            POSTHOG_2SOMEONE_ENV_ID=${{ secrets.POSTHOG_2SOMEONE_PROJECT_ID }}
+            POSTHOG_2SOMEONE_ENV_ID=${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
             NEXT_PUBLIC_POSTHOG_KEY=${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
             NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
             NEXT_PUBLIC_SENTRY_DSN=${{ vars.TWOSOMEONE_SENTRY_DSN }}

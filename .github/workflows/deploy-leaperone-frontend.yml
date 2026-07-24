@@ -319,6 +319,7 @@ jobs:
       bundle_key: leaperone-${{ inputs.component }}/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build.outputs.source_sha }}.tar
       posthog_release_name: ${{ format('LEAPERone {0}', inputs.component) }}
       posthog_release_version: ${{ needs.build.outputs.source_sha }}
+      posthog_project_id: ${{ vars.POSTHOG_LEAPERONE_PROJECT_ID }}
       sentry_project: ${{ inputs.sentry_project }}
       sentry_release: ${{ format('{0}@{1}', inputs.sentry_project, needs.build.outputs.source_sha) }}
     secrets:
@@ -327,7 +328,6 @@ jobs:
       spool_ssh_key: ${{ secrets.DE_APP_SSH_KEY }}
       spool_root: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
       posthog_personal_api_key: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
-      posthog_project_id: ${{ secrets.POSTHOG_LEAPERONE_PROJECT_ID }}
       posthog_internal_url: ${{ secrets.POSTHOG_INTERNAL_URL }}
       sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
       sentry_internal_url: ${{ secrets.SENTRY_INTERNAL_URL }}
