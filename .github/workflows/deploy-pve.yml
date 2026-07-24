@@ -92,7 +92,9 @@ jobs:
             case "$DEPLOY_ENV" in ""|*[!a-z0-9_-]*) echo "ERROR: invalid environment" >&2; exit 1;; esac
 
             TOOL_DIR="${APP_DEPLOY_ROOT}/${PROJECT}/${DEPLOY_ENV}/.release-tools/${{ github.run_id }}-${{ github.run_attempt }}"
+            ENV_TMP=
             cleanup() {
+              [ -z "$ENV_TMP" ] || rm -f -- "$ENV_TMP"
               rm -f -- "$TOOL_DIR/deploy.sh"
               rmdir -- "$TOOL_DIR" 2>/dev/null || true
             }
@@ -117,6 +119,34 @@ jobs:
                   echo "ERROR: unexpected CN image reference" >&2
                   exit 1
                 }
+                [[ "$DEPLOY_STATE_ROOT" =~ ^/[A-Za-z0-9._/-]+$ ]] || {
+                  echo "ERROR: invalid deployment-state root" >&2
+                  exit 1
+                }
+                APP_ENV_FILE="${APP_DEPLOY_ROOT}/${PROJECT}/${DEPLOY_ENV}/.env"
+                [ -f "$APP_ENV_FILE" ] || {
+                  echo "ERROR: target .env is missing" >&2
+                  exit 1
+                }
+                umask 077
+                ENV_TMP="$(mktemp "${APP_ENV_FILE}.XXXXXX")"
+                awk -v value="$DEPLOY_STATE_ROOT" '
+                  BEGIN { found = 0 }
+                  /^DEPLOY_STATE_ROOT=/ {
+                    print "DEPLOY_STATE_ROOT=" value
+                    found++
+                    next
+                  }
+                  { print }
+                  END { if (found != 1) exit 42 }
+                ' "$APP_ENV_FILE" > "$ENV_TMP" || {
+                  echo "ERROR: target .env must contain exactly one DEPLOY_STATE_ROOT assignment" >&2
+                  exit 1
+                }
+                chown --reference="$APP_ENV_FILE" "$ENV_TMP"
+                chmod 0600 "$ENV_TMP"
+                mv -f -- "$ENV_TMP" "$APP_ENV_FILE"
+                ENV_TMP=
                 [ -n "${ALIYUN_DOCKER_USERNAME:-}" ] || {
                   echo "ERROR: registry username is required" >&2
                   exit 1
