@@ -29,6 +29,11 @@ on:
         type: string
         default: ""
         description: "Optional full SHA which must match requested_ref"
+      site_variant:
+        required: false
+        type: string
+        default: global
+        description: "WWW build/deploy variant: global or cn"
     outputs:
       source_sha:
         description: "Verified LEAPERone source SHA"
@@ -55,14 +60,15 @@ jobs:
           PROJECT: ${{ inputs.project }}
           SENTRY_PROJECT: ${{ inputs.sentry_project }}
           REQUESTED_REF: ${{ inputs.requested_ref }}
+          SITE_VARIANT: ${{ inputs.site_variant }}
         run: |
           set -euo pipefail
 
-          case "$COMPONENT:$PROJECT:$SENTRY_PROJECT" in
-            www:leaperone-www:leaperone-www|dashboard:leaperone-dashboard:leaperone-dashboard)
+          case "$COMPONENT:$PROJECT:$SENTRY_PROJECT:$SITE_VARIANT" in
+            www:leaperone-www:leaperone-www:global|dashboard:leaperone-dashboard:leaperone-dashboard:global|www:leaperone-www-cn:leaperone-www:cn)
               ;;
             *)
-              echo "ERROR: unsupported frontend/project/Sentry tuple: $COMPONENT:$PROJECT:$SENTRY_PROJECT" >&2
+              echo "ERROR: unsupported frontend/project/Sentry/site tuple: $COMPONENT:$PROJECT:$SENTRY_PROJECT:$SITE_VARIANT" >&2
               exit 1
               ;;
           esac
@@ -198,6 +204,9 @@ jobs:
           COMPONENT: ${{ inputs.component }}
           API_URL: https://api.leaper.one
           NEXT_PUBLIC_DASHBOARD_URL: https://dashboard.leaper.one
+          NEXT_PUBLIC_SITE_REGION: ${{ inputs.site_variant }}
+          ICP_BEIAN: ${{ inputs.site_variant == 'cn' && '粤ICP备2024184990号-4' || '' }}
+          BUILD_SOURCE_SHA: ${{ steps.source.outputs.sha }}
           NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.LEAPERONE_TURNSTILE_SITE_KEY }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_LEAPERONE_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_HOST: https://t.leaper.one
@@ -207,17 +216,65 @@ jobs:
           SENTRY_ORG: leaperone
           SENTRY_URL: ${{ secrets.SENTRY_INTERNAL_URL }}
           WWW_SENTRY_PROJECT: ${{ inputs.component == 'www' && inputs.sentry_project || '' }}
-          WWW_SENTRY_RELEASE: ${{ inputs.component == 'www' && format('leaperone-www@{0}', steps.source.outputs.sha) || '' }}
+          WWW_SENTRY_RELEASE: ${{ inputs.component == 'www' && inputs.site_variant == 'cn' && format('leaperone-www-cn@{0}', steps.source.outputs.sha) || inputs.component == 'www' && format('leaperone-www@{0}', steps.source.outputs.sha) || '' }}
           DASHBOARD_SENTRY_PROJECT: ${{ inputs.component == 'dashboard' && inputs.sentry_project || '' }}
           DASHBOARD_SENTRY_RELEASE: ${{ inputs.component == 'dashboard' && format('leaperone-dashboard@{0}', steps.source.outputs.sha) || '' }}
           NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.build-secret.outputs.actions_path }}
         run: docker compose -f docker/docker-compose-build.yml build "leaperone-${COMPONENT}"
+
+      - name: Verify CN image compliance and health
+        if: inputs.site_variant == 'cn'
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:www-latest"
+          CONTAINER="leaperone-www-cn-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          [ "$(docker image inspect --format '{{index .Config.Labels "com.leaperone.source-sha"}}' "$IMAGE")" = "$SOURCE_SHA" ] || {
+            echo "ERROR: CN image source SHA label mismatch" >&2
+            exit 1
+          }
+          [ "$(docker image inspect --format '{{index .Config.Labels "com.leaperone.site-region"}}' "$IMAGE")" = cn ] || {
+            echo "ERROR: CN image site-region label mismatch" >&2
+            exit 1
+          }
+
+          docker run -d --name "$CONTAINER" -p 127.0.0.1:39822:3000 "$IMAGE" >/dev/null
+          for attempt in $(seq 1 40); do
+            if curl -fsS --max-time 5 http://127.0.0.1:39822/api/health >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 40 ]; then
+              docker logs "$CONTAINER" >&2
+              echo "ERROR: CN image failed its local health check" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+          curl -fsS --max-time 10 http://127.0.0.1:39822/zh > "$RUNNER_TEMP/leaperone-www-cn.html"
+          grep -Fq '粤ICP备2024184990号-4' "$RUNNER_TEMP/leaperone-www-cn.html" || {
+            echo "ERROR: CN homepage is missing the required ICP record" >&2
+            exit 1
+          }
+          if grep -Eiq 'OpenAI|Claude|GPT' "$RUNNER_TEMP/leaperone-www-cn.html"; then
+            echo "ERROR: CN homepage contains a forbidden model/provider name" >&2
+            exit 1
+          fi
 
       - name: Extract exact-build source maps
         env:
           COMPONENT: ${{ inputs.component }}
           API_URL: https://api.leaper.one
           NEXT_PUBLIC_DASHBOARD_URL: https://dashboard.leaper.one
+          NEXT_PUBLIC_SITE_REGION: ${{ inputs.site_variant }}
+          ICP_BEIAN: ${{ inputs.site_variant == 'cn' && '粤ICP备2024184990号-4' || '' }}
+          BUILD_SOURCE_SHA: ${{ steps.source.outputs.sha }}
           NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.LEAPERONE_TURNSTILE_SITE_KEY }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_LEAPERONE_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_HOST: https://t.leaper.one
@@ -227,7 +284,7 @@ jobs:
           SENTRY_URL: ${{ secrets.SENTRY_INTERNAL_URL }}
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: ${{ inputs.sentry_project }}
-          SENTRY_RELEASE: ${{ format('{0}@{1}', inputs.sentry_project, steps.source.outputs.sha) }}
+          SENTRY_RELEASE: ${{ inputs.component == 'www' && inputs.site_variant == 'cn' && format('leaperone-www-cn@{0}', steps.source.outputs.sha) || format('{0}@{1}', inputs.sentry_project, steps.source.outputs.sha) }}
           NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.build-secret.outputs.actions_path }}
         run: |
           set -euo pipefail
@@ -236,6 +293,9 @@ jobs:
             --target sourcemaps \
             --build-arg API_URL="$API_URL" \
             --build-arg NEXT_PUBLIC_DASHBOARD_URL="$NEXT_PUBLIC_DASHBOARD_URL" \
+            --build-arg NEXT_PUBLIC_SITE_REGION="$NEXT_PUBLIC_SITE_REGION" \
+            --build-arg ICP_BEIAN="$ICP_BEIAN" \
+            --build-arg BUILD_SOURCE_SHA="$BUILD_SOURCE_SHA" \
             --build-arg NEXT_PUBLIC_TURNSTILE_SITE_KEY="$NEXT_PUBLIC_TURNSTILE_SITE_KEY" \
             --build-arg NEXT_PUBLIC_POSTHOG_KEY="$NEXT_PUBLIC_POSTHOG_KEY" \
             --build-arg NEXT_PUBLIC_POSTHOG_HOST="$NEXT_PUBLIC_POSTHOG_HOST" \
@@ -268,7 +328,7 @@ jobs:
           SOURCEMAP_SPOOL_USERNAME: ${{ secrets.DE_APP_USERNAME }}
           SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
           SOURCEMAP_SPOOL_ROOT: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
-          BUNDLE_KEY: leaperone-${{ inputs.component }}/${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.source.outputs.sha }}.tar
+          BUNDLE_KEY: leaperone-${{ inputs.site_variant == 'cn' && 'www-cn' || inputs.component }}/${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.source.outputs.sha }}.tar
         run: .release-automation/scripts/stage-sourcemap-bundle.sh "$RUNNER_TEMP/sourcemaps.tar" "$BUNDLE_KEY"
 
       - name: Remove frontend BuildKit secret
@@ -288,12 +348,18 @@ jobs:
         id: publish
         env:
           COMPONENT: ${{ inputs.component }}
+          SITE_VARIANT: ${{ inputs.site_variant }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
           set -euo pipefail
           REGISTRY_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone"
           LOCAL_IMAGE="${REGISTRY_IMAGE}:${COMPONENT}-latest"
-          IMMUTABLE_IMAGE="${REGISTRY_IMAGE}:${COMPONENT}-${SOURCE_SHA}"
+          if [ "$SITE_VARIANT" = cn ]; then
+            TAG_COMPONENT="${COMPONENT}-cn"
+          else
+            TAG_COMPONENT="$COMPONENT"
+          fi
+          IMMUTABLE_IMAGE="${REGISTRY_IMAGE}:${TAG_COMPONENT}-${SOURCE_SHA}"
 
           if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "ERROR: refusing to publish a mutable or malformed image tag" >&2
@@ -316,12 +382,12 @@ jobs:
     needs: build
     uses: ./.github/workflows/upload-telemetry-sourcemaps.yml
     with:
-      bundle_key: leaperone-${{ inputs.component }}/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build.outputs.source_sha }}.tar
-      posthog_release_name: ${{ format('LEAPERone {0}', inputs.component) }}
+      bundle_key: leaperone-${{ inputs.site_variant == 'cn' && 'www-cn' || inputs.component }}/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build.outputs.source_sha }}.tar
+      posthog_release_name: ${{ inputs.site_variant == 'cn' && 'LEAPERone www-cn' || format('LEAPERone {0}', inputs.component) }}
       posthog_release_version: ${{ needs.build.outputs.source_sha }}
       posthog_project_id: ${{ vars.POSTHOG_LEAPERONE_PROJECT_ID }}
       sentry_project: ${{ inputs.sentry_project }}
-      sentry_release: ${{ format('{0}@{1}', inputs.sentry_project, needs.build.outputs.source_sha) }}
+      sentry_release: ${{ inputs.component == 'www' && inputs.site_variant == 'cn' && format('leaperone-www-cn@{0}', needs.build.outputs.source_sha) || format('{0}@{1}', inputs.sentry_project, needs.build.outputs.source_sha) }}
     secrets:
       spool_host: ${{ secrets.DE_APP_HOST }}
       spool_username: ${{ secrets.DE_APP_USERNAME }}
@@ -333,10 +399,23 @@ jobs:
       sentry_internal_url: ${{ secrets.SENTRY_INTERNAL_URL }}
 
   deploy-de:
+    if: inputs.site_variant == 'global'
     needs: build
     uses: ./.github/workflows/deploy-de.yml
     with:
       project: ${{ inputs.project }}
+      env: production
+      image_source_sha: ${{ needs.build.outputs.source_sha }}
+      image_ref: ${{ needs.build.outputs.image_ref }}
+      image_digest: ${{ needs.build.outputs.image_digest }}
+    secrets: inherit
+
+  deploy-pve-cn:
+    if: inputs.site_variant == 'cn'
+    needs: build
+    uses: ./.github/workflows/deploy-pve.yml
+    with:
+      project: leaperone-www-cn
       env: production
       image_source_sha: ${{ needs.build.outputs.source_sha }}
       image_ref: ${{ needs.build.outputs.image_ref }}
