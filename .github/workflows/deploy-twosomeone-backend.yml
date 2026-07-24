@@ -31,15 +31,29 @@ jobs:
       is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
       is_tag: ${{ steps.set-ref.outputs.is_tag }}
       deploy_env: ${{ steps.set-ref.outputs.deploy_env }}
+      source_sha: ${{ steps.source-coordinate.outputs.source_sha }}
+      app_sha: ${{ steps.source-coordinate.outputs.app_sha }}
       components: ${{ steps.set-ref.outputs.components }}
     steps:
       - name: Validate and set ref
         id: set-ref
+        env:
+          RAW_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
         run: |
+          set -euo pipefail
           REF="${{ github.event.inputs.ref || github.event.client_payload.ref }}"
           ENV_INPUT="${{ github.event.inputs.env || github.event.client_payload.env }}"
           COMPONENTS="${{ github.event.client_payload.components || github.event.client_payload.build_targets }}"
           DEPLOY_ENV="${ENV_INPUT:-production}"
+          SOURCE_SHA=""
+          if [ -n "$RAW_SOURCE_SHA" ]; then
+            [[ "$RAW_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "ERROR: repository_dispatch source_sha must be a full lowercase Git SHA" >&2
+              exit 1
+            }
+            SOURCE_SHA="$RAW_SOURCE_SHA"
+          fi
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
           if [ -z "$COMPONENTS" ]; then
             COMPONENTS="backend"
@@ -99,6 +113,31 @@ jobs:
             echo "non-deployable ref: $REF"
           fi
 
+      - name: Checkout exact 2SOMEone source coordinate
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/2SOMEone
+          ref: ${{ steps.set-ref.outputs.source_sha || steps.set-ref.outputs.ref }}
+
+      - name: Resolve exact app SHA
+        id: source-coordinate
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        env:
+          EXPECTED_SOURCE_SHA: ${{ steps.set-ref.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          app_sha="$(git rev-parse --short=7 HEAD)"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ && "$app_sha" =~ ^[0-9a-f]{7}$ ]] || exit 1
+          if [ -n "$EXPECTED_SOURCE_SHA" ] && [ "$source_sha" != "$EXPECTED_SOURCE_SHA" ]; then
+            echo "ERROR: checked out source does not match repository_dispatch source_sha" >&2
+            exit 1
+          fi
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "app_sha=$app_sha" >> "$GITHUB_OUTPUT"
+
   build-and-push:
     needs: prepare
     if: needs.prepare.outputs.is_deployable == 'true'
@@ -107,14 +146,14 @@ jobs:
       group: deploy-twosomeone-backend-deployable
       cancel-in-progress: false
     outputs:
-      app_sha: ${{ steps.app-sha.outputs.sha }}
+      image_digest: ${{ steps.build-push.outputs.digest }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/2SOMEone
-          ref: ${{ needs.prepare.outputs.ref }}
+          ref: ${{ needs.prepare.outputs.source_sha }}
 
       - name: Check Skip CI
         run: |
@@ -125,7 +164,16 @@ jobs:
 
       - name: Compute app SHA
         id: app-sha
-        run: echo "sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          EXPECTED_APP_SHA: ${{ needs.prepare.outputs.app_sha }}
+        run: |
+          set -euo pipefail
+          app_sha="$(git rev-parse --short=7 HEAD)"
+          [ "$app_sha" = "$EXPECTED_APP_SHA" ] || {
+            echo "ERROR: build checkout SHA does not match prepare job coordinate" >&2
+            exit 1
+          }
+          echo "sha=$app_sha" >> "$GITHUB_OUTPUT"
 
       - name: Login to Aliyun Docker Registry (Shanghai)
         uses: docker/login-action@v4
@@ -158,6 +206,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and Push
+        id: build-push
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -190,3 +239,24 @@ jobs:
       env: ${{ needs.prepare.outputs.deploy_env }}
       internal: false
     secrets: inherit
+
+  private-release-hook:
+    needs: [prepare, build-and-push, await-migrate, deploy-pve]
+    if: >-
+      always() &&
+      needs.prepare.outputs.is_deployable == 'true' &&
+      needs.prepare.outputs.deploy_env == 'production' &&
+      needs.build-and-push.result == 'success' &&
+      needs.await-migrate.result == 'success' &&
+      needs.deploy-pve.result == 'success'
+    uses: ./.github/workflows/private-release-hook.yml
+    with:
+      artifact: backend
+      source_sha: ${{ needs.prepare.outputs.source_sha }}
+      image_ref: >-
+        registry.cn-shanghai.aliyuncs.com/leaperone/2someren:backend-${{ needs.prepare.outputs.app_sha }}@${{ needs.build-and-push.outputs.image_digest }}
+      release_run_id: ${{ github.run_id }}
+    secrets:
+      dispatch_repository: ${{ secrets.PRIVATE_RELEASE_REPOSITORY }}
+      dispatch_workflow: ${{ secrets.PRIVATE_RELEASE_WORKFLOW }}
+      dispatch_token: ${{ secrets.PRIVATE_RELEASE_TOKEN }}

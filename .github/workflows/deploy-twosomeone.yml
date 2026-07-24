@@ -32,7 +32,7 @@ jobs:
       is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
       is_tag: ${{ steps.set-ref.outputs.is_tag }}
       deploy_env: ${{ steps.set-ref.outputs.deploy_env }}
-      source_sha: ${{ steps.set-ref.outputs.source_sha }}
+      source_sha: ${{ steps.source-coordinate.outputs.source_sha }}
       app_sha: ${{ steps.source-coordinate.outputs.app_sha }}
       pointed_tag: ${{ steps.detect-tag.outputs.pointed_tag }}
       components: ${{ steps.set-ref.outputs.components }}
@@ -219,6 +219,7 @@ jobs:
             echo "ERROR: checked out source does not match repository_dispatch source_sha" >&2
             exit 1
           fi
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           echo "app_sha=$app_sha" >> "$GITHUB_OUTPUT"
 
   build-and-push:
@@ -228,6 +229,8 @@ jobs:
     concurrency:
       group: deploy-twosomeone-deployable-${{ needs.prepare.outputs.deploy_env }}
       cancel-in-progress: false
+    outputs:
+      image_digest: ${{ steps.build-push.outputs.digest }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -338,6 +341,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and Push (deployable)
+        id: build-push
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -622,6 +626,27 @@ jobs:
       env: ${{ needs.prepare.outputs.deploy_env }}
       internal: false
     secrets: inherit
+
+  private-release-hook:
+    needs: [prepare, build-and-push, drift-check, deploy-pve]
+    if: >-
+      always() &&
+      needs.prepare.outputs.is_deployable == 'true' &&
+      needs.prepare.outputs.deploy_env == 'production' &&
+      needs.build-and-push.result == 'success' &&
+      needs.deploy-pve.result == 'success' &&
+      (needs.drift-check.result == 'success' || needs.drift-check.result == 'skipped')
+    uses: ./.github/workflows/private-release-hook.yml
+    with:
+      artifact: web
+      source_sha: ${{ needs.prepare.outputs.source_sha }}
+      image_ref: >-
+        registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-${{ needs.prepare.outputs.app_sha }}@${{ needs.build-and-push.outputs.image_digest }}
+      release_run_id: ${{ github.run_id }}
+    secrets:
+      dispatch_repository: ${{ secrets.PRIVATE_RELEASE_REPOSITORY }}
+      dispatch_workflow: ${{ secrets.PRIVATE_RELEASE_WORKFLOW }}
+      dispatch_token: ${{ secrets.PRIVATE_RELEASE_TOKEN }}
 
   deploy-hk-beta:
     needs: [prepare, build-and-push]
