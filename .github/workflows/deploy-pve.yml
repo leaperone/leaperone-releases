@@ -16,6 +16,21 @@ on:
         type: boolean
         default: false
         description: 'When true, use PVE_APP_HOST_INTERNAL/PVE_APP_PORT_INTERNAL secrets (PVE LAN). When false (default), use PVE_APP_HOST/PVE_APP_PORT (public).'
+      image_source_sha:
+        required: false
+        type: string
+        default: ""
+        description: "Optional full source SHA for an immutable deployment"
+      image_ref:
+        required: false
+        type: string
+        default: ""
+        description: "Expected immutable registry image reference"
+      image_digest:
+        required: false
+        type: string
+        default: ""
+        description: "Expected registry manifest digest"
 
 jobs:
   deploy:
@@ -23,8 +38,11 @@ jobs:
     steps:
       - name: Checkout deployment configs
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
-      - name: Sync deploy entrypoint to server
+      - name: Sync run-scoped deploy entrypoint to server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ inputs.internal && secrets.PVE_APP_HOST_INTERNAL || secrets.PVE_APP_HOST }}
@@ -32,7 +50,7 @@ jobs:
           key: ${{ secrets.PVE_APP_SSH_KEY }}
           port: ${{ inputs.internal && secrets.PVE_APP_PORT_INTERNAL || secrets.PVE_APP_PORT }}
           source: "scripts/deploy.sh"
-          target: "${{ secrets.APP_DEPLOY_ROOT }}/bin"
+          target: "${{ secrets.APP_DEPLOY_ROOT }}/${{ inputs.project }}/${{ inputs.env }}/.release-tools/${{ github.run_id }}-${{ github.run_attempt }}"
           strip_components: 1
           overwrite: true
 
@@ -52,11 +70,76 @@ jobs:
         uses: appleboy/ssh-action@v1.0.0
         env:
           APP_DEPLOY_ROOT: ${{ secrets.APP_DEPLOY_ROOT }}
+          DEPLOY_STATE_ROOT: ${{ secrets.DEPLOY_STATE_ROOT }}
+          IMAGE_SOURCE_SHA: ${{ inputs.image_source_sha }}
+          IMAGE_REF: ${{ inputs.image_ref }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          RELEASES_SHA: ${{ github.sha }}
+          ALIYUN_DOCKER_USERNAME: ${{ inputs.project == 'leaperone-www-cn' && secrets.ALIYUN_DOCKER_USERNAME || '' }}
+          ALIYUN_DOCKER_PASSWORD: ${{ inputs.project == 'leaperone-www-cn' && secrets.ALIYUN_DOCKER_PASSWORD || '' }}
         with:
           host: ${{ inputs.internal && secrets.PVE_APP_HOST_INTERNAL || secrets.PVE_APP_HOST }}
           username: ${{ secrets.PVE_APP_USERNAME }}
           key: ${{ secrets.PVE_APP_SSH_KEY }}
           port: ${{ inputs.internal && secrets.PVE_APP_PORT_INTERNAL || secrets.PVE_APP_PORT }}
           command_timeout: 20m
-          envs: APP_DEPLOY_ROOT
-          script: $APP_DEPLOY_ROOT/bin/deploy.sh ${{ inputs.project }} ${{ inputs.env }}
+          envs: APP_DEPLOY_ROOT,DEPLOY_STATE_ROOT,IMAGE_SOURCE_SHA,IMAGE_REF,IMAGE_DIGEST,RELEASES_SHA,ALIYUN_DOCKER_USERNAME,ALIYUN_DOCKER_PASSWORD
+          script: |
+            set -euo pipefail
+            PROJECT="${{ inputs.project }}"
+            DEPLOY_ENV="${{ inputs.env }}"
+            case "$PROJECT" in ""|*[!a-z0-9_-]*) echo "ERROR: invalid project" >&2; exit 1;; esac
+            case "$DEPLOY_ENV" in ""|*[!a-z0-9_-]*) echo "ERROR: invalid environment" >&2; exit 1;; esac
+
+            TOOL_DIR="${APP_DEPLOY_ROOT}/${PROJECT}/${DEPLOY_ENV}/.release-tools/${{ github.run_id }}-${{ github.run_attempt }}"
+            cleanup() {
+              rm -f -- "$TOOL_DIR/deploy.sh"
+              rmdir -- "$TOOL_DIR" 2>/dev/null || true
+            }
+            trap cleanup EXIT
+
+            case "$PROJECT:$DEPLOY_ENV" in
+              leaperone-www-cn:production)
+                [[ "$IMAGE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+                  echo "ERROR: CN deploy requires a full lowercase source SHA" >&2
+                  exit 1
+                }
+                [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+                  echo "ERROR: CN deploy requires an exact registry digest" >&2
+                  exit 1
+                }
+                [[ "$RELEASES_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+                  echo "ERROR: invalid release-automation SHA" >&2
+                  exit 1
+                }
+                EXPECTED_IMAGE_REF="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:www-cn-${IMAGE_SOURCE_SHA}"
+                [ "$IMAGE_REF" = "$EXPECTED_IMAGE_REF" ] || {
+                  echo "ERROR: unexpected CN image reference" >&2
+                  exit 1
+                }
+                [ -n "${ALIYUN_DOCKER_USERNAME:-}" ] || {
+                  echo "ERROR: registry username is required" >&2
+                  exit 1
+                }
+                [ -n "${ALIYUN_DOCKER_PASSWORD:-}" ] || {
+                  echo "ERROR: registry password is required" >&2
+                  exit 1
+                }
+                printf '%s' "$ALIYUN_DOCKER_PASSWORD" \
+                  | docker login registry.cn-hongkong.aliyuncs.com \
+                      --username "$ALIYUN_DOCKER_USERNAME" \
+                      --password-stdin >/dev/null
+                unset ALIYUN_DOCKER_USERNAME ALIYUN_DOCKER_PASSWORD
+                export WWW_CN_IMAGE_TAG="www-cn-${IMAGE_SOURCE_SHA}"
+                export WWW_CN_IMAGE_DIGEST="$IMAGE_DIGEST"
+                export WWW_CN_SOURCE_SHA="$IMAGE_SOURCE_SHA"
+                ;;
+              *)
+                if [ -n "${IMAGE_SOURCE_SHA:-}${IMAGE_REF:-}${IMAGE_DIGEST:-}" ]; then
+                  echo "ERROR: immutable image inputs are unsupported for this project" >&2
+                  exit 1
+                fi
+                ;;
+            esac
+
+            bash "$TOOL_DIR/deploy.sh" "$PROJECT" "$DEPLOY_ENV"

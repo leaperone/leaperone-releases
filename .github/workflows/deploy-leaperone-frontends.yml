@@ -62,8 +62,21 @@ jobs:
       requested_source_sha: ${{ needs.validate.outputs.source_sha }}
     secrets: inherit
 
+  www_cn:
+    needs: [validate, www]
+    uses: ./.github/workflows/deploy-leaperone-frontend.yml
+    with:
+      component: www
+      project: leaperone-www-cn
+      site_variant: cn
+      sentry_project: leaperone-www
+      sentry_dsn: ${{ vars.LEAPERONE_WWW_SENTRY_DSN }}
+      requested_ref: ${{ needs.validate.outputs.source_ref }}
+      requested_source_sha: ${{ needs.validate.outputs.source_sha }}
+    secrets: inherit
+
   cutover:
-    needs: [validate, dashboard, www]
+    needs: [validate, dashboard, www, www_cn]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout release configuration
@@ -74,6 +87,7 @@ jobs:
           EXPECTED_SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
           DASHBOARD_SOURCE_SHA: ${{ needs.dashboard.outputs.source_sha }}
           WWW_SOURCE_SHA: ${{ needs.www.outputs.source_sha }}
+          WWW_CN_SOURCE_SHA: ${{ needs.www_cn.outputs.source_sha }}
         run: |
           set -euo pipefail
           [ "$DASHBOARD_SOURCE_SHA" = "$EXPECTED_SOURCE_SHA" ] || {
@@ -82,6 +96,10 @@ jobs:
           }
           [ "$WWW_SOURCE_SHA" = "$EXPECTED_SOURCE_SHA" ] || {
             echo "ERROR: WWW source SHA drifted from the pinned pair" >&2
+            exit 1
+          }
+          [ "$WWW_CN_SOURCE_SHA" = "$EXPECTED_SOURCE_SHA" ] || {
+            echo "ERROR: WWW CN source SHA drifted from the pinned frontend release" >&2
             exit 1
           }
 

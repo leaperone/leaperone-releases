@@ -1,0 +1,24 @@
+name: Deploy LEAPERone WWW CN
+run-name: >-
+  🚀 Deploy LEAPERone WWW CN · @${{ github.event.client_payload.author || github.actor }} [src=${{ github.event.client_payload.source_sha || github.event.client_payload.ref || 'main' }}]
+
+on:
+  repository_dispatch:
+    types: [deploy-leaperone-www-cn]
+
+concurrency:
+  group: leaperone-frontends-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy-leaperone-frontend.yml
+    with:
+      component: www
+      project: leaperone-www-cn
+      site_variant: cn
+      sentry_project: leaperone-www
+      sentry_dsn: ${{ vars.LEAPERONE_WWW_SENTRY_DSN }}
+      requested_ref: ${{ github.event.client_payload.ref || 'main' }}
+      requested_source_sha: ${{ github.event.client_payload.source_sha || '' }}
+    secrets: inherit
