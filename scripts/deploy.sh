@@ -201,6 +201,18 @@ if [ -f "$APP_DIR/preflight.sh" ]; then
   "$APP_DIR/preflight.sh"
 fi
 
+# ── 项目专用不可变 release opt-in ───────────────────────────────────────────
+# 对需要自己保存部署状态和自动回退的项目，deploy-release.sh 完整接管发布。
+# 和蓝绿入口一样，文件存在但不可执行时 fail closed，禁止误落到 legacy compose 替换。
+if [ -f "$APP_DIR/deploy-release.sh" ]; then
+  if [ -x "$APP_DIR/deploy-release.sh" ]; then
+    echo "==> Immutable release deployer detected for ${PROJECT}/${ENV}; delegating to deploy-release.sh"
+    exec "$APP_DIR/deploy-release.sh"
+  fi
+  echo "ERROR: $APP_DIR/deploy-release.sh exists but is not executable; refusing legacy fallback. Run chmod +x and retry." >&2
+  exit 1
+fi
+
 # ── 蓝绿 opt-in ─────────────────────────────────────────────────────────────
 # 某个 project/env 若随 compose 一起 scp 来一份可执行的 deploy-bluegreen.sh，则把部署
 # 完全交给它（拉空闲色 → 健康探测 → 原子切 nginx upstream → 停旧色，零停机）。

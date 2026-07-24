@@ -1,0 +1,21 @@
+name: leaperone-www-cn-${DEPLOY_ENV:-production}
+
+# Root .env is compose-only. Runtime variables belong in .env.www.
+services:
+  www-cn:
+    image: ${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}/leaperone/leaperone:${WWW_CN_IMAGE_TAG:?WWW_CN_IMAGE_TAG must be an immutable www-cn source-SHA tag}@${WWW_CN_IMAGE_DIGEST:?WWW_CN_IMAGE_DIGEST must be the expected registry manifest digest}
+    container_name: ${WWW_CN_CONTAINER_NAME:?WWW_CN_CONTAINER_NAME is required}
+    env_file:
+      - .env.www
+    environment:
+      ICP_BEIAN: 粤ICP备2024184990号-4
+      NEXT_PUBLIC_SITE_REGION: cn
+      SENTRY_RELEASE: leaperone-www-cn@${WWW_CN_SOURCE_SHA:?WWW_CN_SOURCE_SHA must be a full source SHA}
+    labels:
+      org.opencontainers.image.revision: ${WWW_CN_SOURCE_SHA}
+      com.leaperone.source-sha: ${WWW_CN_SOURCE_SHA}
+      com.leaperone.image-digest: ${WWW_CN_IMAGE_DIGEST}
+      com.leaperone.site-region: cn
+    ports:
+      - "127.0.0.1:${WWW_CN_PORT:?WWW_CN_PORT is required}:3000"
+    restart: unless-stopped
