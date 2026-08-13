@@ -132,6 +132,13 @@ jobs:
         with:
           version: '2.14.2'
 
+      - name: Set up Docker Buildx with pinned BuildKit
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:v0.31.2
+            default-load=true
+
       - name: Compute app SHA
         id: app-sha
         run: echo "sha=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
