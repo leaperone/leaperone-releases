@@ -82,6 +82,9 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          # Keep verification on the same BuildKit version as deploy builds.
+          driver-opts: image=moby/buildkit:v0.31.2
 
       - name: Build (non-deployable verification)
         uses: docker/build-push-action@v6
