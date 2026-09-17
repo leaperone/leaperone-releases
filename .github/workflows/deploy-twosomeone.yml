@@ -489,22 +489,39 @@ jobs:
         working-directory: apps/web
         env:
           TWOSOMEREN_DATABASE_URL: ${{ secrets.TWOSOMEREN_DATABASE_URL }}
-          ATLAS_DEV_URL: "postgres://postgres:dev@localhost:5432/dev?sslmode=disable&search_path=public"
+          ATLAS_DEV_URL: "postgres://postgres:dev@localhost:5432/dev?sslmode=disable"
         run: |
           # set +e so a connection/parse/community-edition failure stays distinguishable
           # from genuine schema drift (an empty `out` would otherwise read as "drift").
           set +e
-          # Atlas requires --from and --to to share scope. The file source is loaded at
-          # schema scope (dev-url pins search_path=public), so the prod connection must be
-          # pinned to the public schema too, otherwise atlas errors with
-          # "cannot diff a database connection with a schema". The secret may or may not
-          # already carry query params / search_path, so normalize defensively.
-          to="$TWOSOMEREN_DATABASE_URL"
-          case "$to" in
-            *search_path=*) : ;;
-            *\?*) to="$to&search_path=public" ;;
-            *)    to="$to?search_path=public" ;;
-          esac
+          # Main contains both the public application schema and the crawler schema. Atlas
+          # accepts only one schema in search_path, so diff this source and database at
+          # database scope. Remove schema selectors from the secret while preserving options
+          # such as sslmode.
+          without_schema_scope() {
+            local url="$1"
+            if [[ "$url" != *\?* ]]; then
+              printf '%s' "$url"
+              return
+            fi
+            local base="${url%%\?*}"
+            local query="${url#*\?}"
+            local part kept=''
+            IFS='&' read -ra query_parts <<< "$query"
+            for part in "${query_parts[@]}"; do
+              case "$part" in
+                search_path=*|schema=*) continue ;;
+              esac
+              if [[ -n "$kept" ]]; then kept+='&'; fi
+              kept+="$part"
+            done
+            if [[ -n "$kept" ]]; then
+              printf '%s?%s' "$base" "$kept"
+            else
+              printf '%s' "$base"
+            fi
+          }
+          to="$(without_schema_scope "$TWOSOMEREN_DATABASE_URL")"
           # UserSummary_MV is an out-of-band materialized view (.existing() in drizzle,
           # absent from _source.sql). Atlas community can't diff matviews; exclude it or
           # the check false-positives. See 2SOMEone#364.
@@ -513,6 +530,7 @@ jobs:
             --to "$to" \
             --dev-url "$ATLAS_DEV_URL" \
             --exclude "drizzle.*" \
+            --exclude "atlas_schema_revisions" \
             --exclude "public.UserSummary_MV" 2>&1)
           rc=$?
           echo "$out"
