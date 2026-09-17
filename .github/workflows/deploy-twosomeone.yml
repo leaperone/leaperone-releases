@@ -530,6 +530,7 @@ jobs:
             --to "$to" \
             --dev-url "$ATLAS_DEV_URL" \
             --exclude "drizzle.*" \
+            --exclude "atlas_schema_revisions" \
             --exclude "public.UserSummary_MV" 2>&1)
           rc=$?
           echo "$out"
