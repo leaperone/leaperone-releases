@@ -529,6 +529,7 @@ jobs:
             --from "file://atlas/main/_source.sql?format=postgres" \
             --to "$to" \
             --dev-url "$ATLAS_DEV_URL" \
+            --exclude "drizzle" \
             --exclude "drizzle.*" \
             --exclude "atlas_schema_revisions" \
             --exclude "public.UserSummary_MV" 2>&1)
@@ -568,6 +569,7 @@ jobs:
             --from "file://atlas/region/_source.sql?format=postgres" \
             --to "$to" \
             --dev-url "$ATLAS_DEV_URL" \
+            --exclude "drizzle" \
             --exclude "drizzle.*" 2>&1)
           rc=$?
           echo "$out"
@@ -602,6 +604,7 @@ jobs:
             --from "file://atlas/bili/_source.sql?format=postgres" \
             --to "$to" \
             --dev-url "$ATLAS_DEV_URL" \
+            --exclude "drizzle" \
             --exclude "drizzle.*" \
             --exclude "public.LiveSession_MV" \
             --exclude "public.GiftDailySummary_MV" \
