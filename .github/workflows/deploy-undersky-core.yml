@@ -1,0 +1,168 @@
+name: Build and deploy UnderSky core (Germany)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: UnderSky branch or tag
+        required: true
+        default: main
+        type: string
+      source_sha:
+        description: Full 40-character UnderSky SHA; must match source_ref
+        required: true
+        type: string
+      deploy:
+        description: Deploy the built digests to the Germany host
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: undersky-core-germany-production
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPOSITORY: registry.cn-hongkong.aliyuncs.com/leaperone/undersky
+
+jobs:
+  build:
+    name: Build ${{ matrix.component }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: www
+            dockerfile: apps/www/docker/Dockerfile
+            context: .
+          - component: dashboard
+            dockerfile: apps/dashboard/docker/Dockerfile
+            context: .
+          - component: api
+            dockerfile: apps/api/Dockerfile
+            context: apps/api
+    steps:
+      - name: Checkout UnderSky source
+        uses: actions/checkout@v4
+        with:
+          repository: leaperone/UnderSky
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.ACCESS_TOKEN }}
+          persist-credentials: false
+
+      - name: Verify exact source SHA
+        env:
+          EXPECTED_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "ERROR: source_sha must be a full lowercase SHA" >&2; exit 1; }
+          [[ "$actual" == "$EXPECTED_SHA" ]] || { echo "ERROR: source_sha does not match checked out ref" >&2; exit 1; }
+          echo "Building UnderSky source $actual (${GITHUB_REPOSITORY})"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: image=moby/buildkit:v0.31.2
+
+      - name: Login to registry
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-hongkong.aliyuncs.com
+          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+
+      - name: Build and publish immutable image
+        env:
+          COMPONENT: ${{ matrix.component }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          API_URL: ${{ matrix.component == 'dashboard' && 'https://api.leaper.one' || 'https://api.undersky.ai' }}
+          DASHBOARD_URL: https://dashboard.undersky.ai
+        run: |
+          set -euo pipefail
+          image="${IMAGE_REPOSITORY}:${COMPONENT}-${SOURCE_SHA}"
+          args=(--build-arg "BUILD_SOURCE_SHA=${SOURCE_SHA}")
+          if [ "$COMPONENT" = www ]; then
+            args+=(--build-arg "API_URL=${API_URL}" --build-arg "NEXT_PUBLIC_DASHBOARD_URL=${DASHBOARD_URL}" --build-arg NEXT_PUBLIC_SITE_REGION=global)
+          elif [ "$COMPONENT" = dashboard ]; then
+            args+=(--build-arg "API_URL=${API_URL}")
+          fi
+          docker buildx build --pull --provenance=false --file "${{ matrix.dockerfile }}" --tag "$image" "${{ matrix.context }}" "${args[@]}" --push
+          digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "ERROR: invalid registry digest" >&2; exit 1; }
+          printf '%s\n' "${COMPONENT^^}_IMAGE_REF=${image}@${digest}" > "${COMPONENT}.env"
+
+      - name: Upload immutable image metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: undersky-core-image-${{ matrix.component }}
+          path: ${{ matrix.component }}.env
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy core containers
+    if: ${{ inputs.deploy }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release payload
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download image metadata
+        uses: actions/download-artifact@v4
+        with:
+          pattern: undersky-core-image-*
+          path: image-meta
+          merge-multiple: true
+
+      - name: Load and validate image references
+        id: images
+        shell: bash
+        run: |
+          set -euo pipefail
+          for component in www dashboard api; do
+            file="image-meta/${component}.env"
+            value="$(awk -F= -v key="${component^^}_IMAGE_REF" '$1 == key { print substr($0, index($0,"=")+1); found++ } END { if (found != 1) exit 1 }' "$file")"
+            [[ "$value" =~ ^${IMAGE_REPOSITORY}:${component}-[0-9a-f]{40}@sha256:[0-9a-f]{64}$ ]] || { echo "ERROR: invalid ${component} image metadata" >&2; exit 1; }
+            key="${component^^}_IMAGE_REF"
+            echo "${key}=${value}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Sync compose and deploy scripts
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DE_APP_HOST }}
+          username: ${{ secrets.DE_APP_USERNAME }}
+          key: ${{ secrets.DE_APP_SSH_KEY }}
+          port: ${{ vars.DE_APP_PORT || '22' }}
+          source: compose/undersky-core/*
+          target: ${{ secrets.APP_DEPLOY_ROOT }}/undersky-core/production
+          strip_components: 2
+          overwrite: true
+
+      - name: Deploy resolved digests
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          APP_DEPLOY_ROOT: ${{ secrets.APP_DEPLOY_ROOT }}
+          WWW_IMAGE_REF: ${{ steps.images.outputs.WWW_IMAGE_REF }}
+          DASHBOARD_IMAGE_REF: ${{ steps.images.outputs.DASHBOARD_IMAGE_REF }}
+          API_IMAGE_REF: ${{ steps.images.outputs.API_IMAGE_REF }}
+        with:
+          host: ${{ secrets.DE_APP_HOST }}
+          username: ${{ secrets.DE_APP_USERNAME }}
+          key: ${{ secrets.DE_APP_SSH_KEY }}
+          port: ${{ vars.DE_APP_PORT || '22' }}
+          command_timeout: 20m
+          envs: APP_DEPLOY_ROOT,WWW_IMAGE_REF,DASHBOARD_IMAGE_REF,API_IMAGE_REF
+          script: |
+            set -euo pipefail
+            : "${APP_DEPLOY_ROOT:?APP_DEPLOY_ROOT is required}"
+            : "${WWW_IMAGE_REF:?WWW_IMAGE_REF is required}"
+            : "${DASHBOARD_IMAGE_REF:?DASHBOARD_IMAGE_REF is required}"
+            : "${API_IMAGE_REF:?API_IMAGE_REF is required}"
+            cd "${APP_DEPLOY_ROOT}/undersky-core/production"
+            export DEPLOY_ENV=production
+            ./deploy-core.sh "$WWW_IMAGE_REF" "$DASHBOARD_IMAGE_REF" "$API_IMAGE_REF"
