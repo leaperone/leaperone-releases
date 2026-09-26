@@ -17,9 +17,13 @@ if [[ -s .images.env ]]; then
   # shellcheck disable=SC1091
   . ./.images.env
   set +a
-  docker compose config --quiet
-  docker compose config > .previous-compose.yml.tmp
-  mv .previous-compose.yml.tmp .previous-compose.yml
+  if [[ -s .current-compose.yml ]]; then
+    cp .current-compose.yml .previous-compose.yml
+  else
+    docker compose config --quiet
+    docker compose config > .previous-compose.yml.tmp
+    mv .previous-compose.yml.tmp .previous-compose.yml
+  fi
   cp .images.env .previous-images.env
 fi
 export WWW_IMAGE_REF="$next_www" DASHBOARD_IMAGE_REF="$next_dashboard" API_IMAGE_REF="$next_api"
@@ -39,15 +43,11 @@ restore_on_failure() {
 }
 trap restore_on_failure EXIT
 docker compose up -d --wait --wait-timeout 180
-for endpoint in "http://127.0.0.1:${WWW_PORT}/api/health" "http://127.0.0.1:${DASHBOARD_PORT}/api/ready" "http://127.0.0.1:${API_PORT}/ready"; do
-  curl --fail --silent --show-error --max-time 10 "$endpoint" >/dev/null || fail "health check failed"
-done
-api_health="$(curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:${API_PORT}/health")" || fail "API health endpoint failed"
-grep -Eq '"image"[[:space:]]*:[[:space:]]*false' <<<"$api_health" || fail "API image worker is not disabled at runtime"
-grep -Eq '"video"[[:space:]]*:[[:space:]]*false' <<<"$api_health" || fail "API video worker is not disabled at runtime"
 api_release="${API_IMAGE_REF#*:api-}"; api_release="${api_release%@*}"
-grep -Eq '"release"[[:space:]]*:[[:space:]]*"'"$api_release"'"' <<<"$api_health" || fail "API release does not match the requested image source SHA"
+./verify-core.sh "$api_release"
 printf 'WWW_IMAGE_REF=%s\nDASHBOARD_IMAGE_REF=%s\nAPI_IMAGE_REF=%s\n' "$WWW_IMAGE_REF" "$DASHBOARD_IMAGE_REF" "$API_IMAGE_REF" > .images.env.tmp
 mv .images.env.tmp .images.env
+docker compose config > .current-compose.yml.tmp
+mv .current-compose.yml.tmp .current-compose.yml
 trap - EXIT
 echo "UnderSky core deployment is healthy; Nginx was not changed"
