@@ -112,6 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       app_sha: ${{ steps.app-sha.outputs.sha }}
+      sourcemap_bundle_key: ${{ steps.stage-sourcemaps.outputs.bundle_key }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -234,6 +235,7 @@ jobs:
           persist-credentials: false
 
       - name: Stage exact-build source maps on the deployment node
+        id: stage-sourcemaps
         if: needs.resolve-context.outputs.build_web == 'true'
         env:
           SOURCEMAP_SPOOL_HOST: ${{ secrets.DE_APP_HOST }}
@@ -242,7 +244,9 @@ jobs:
           SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
           SOURCEMAP_SPOOL_ROOT: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
           BUNDLE_KEY: multipost/${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.app-sha.outputs.sha }}.tar
-        run: .release-automation/scripts/stage-sourcemap-bundle.sh "$RUNNER_TEMP/sourcemaps.tar" "$BUNDLE_KEY"
+        run: |
+          .release-automation/scripts/stage-sourcemap-bundle.sh "$RUNNER_TEMP/sourcemaps.tar" "$BUNDLE_KEY"
+          echo "bundle_key=$BUNDLE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Login to Aliyun Docker Registry (Hong Kong)
         uses: docker/login-action@v3
@@ -281,7 +285,7 @@ jobs:
     if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.build_web == 'true'
     uses: ./.github/workflows/upload-telemetry-sourcemaps.yml
     with:
-      bundle_key: multipost/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build-and-push.outputs.app_sha }}.tar
+      bundle_key: ${{ needs.build-and-push.outputs.sourcemap_bundle_key }}
       posthog_release_name: MultiPost
       posthog_release_version: ${{ needs.build-and-push.outputs.app_sha }}
       posthog_project_id: ${{ vars.POSTHOG_MULTIPOST_PROJECT_ID }}
