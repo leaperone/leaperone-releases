@@ -15,7 +15,7 @@ explicitly enabled. It never changes Nginx or DNS.
 
 Before the first deployment, the host administrator must create
 `<APP_DEPLOY_ROOT>/undersky-core/production/.env`, `.env.www`,
-`.env.dashboard`, and `.env.api`, all mode `0600`. The root file supplies
+`.env.dashboard`, `.env.oauth`, and `.env.api`, all mode `0600`. The root file supplies
 `WWW_PORT`, `DASHBOARD_PORT`, and `API_PORT`; the service files supply runtime
 settings and secrets. `.env.api` and `.env.dashboard` must use the existing
 `leaperone_db` database. The preflight rejects a different database name,
@@ -61,3 +61,14 @@ Core acceptance requires an OAuth login on `dashboard.undersky.ai`, an API key
 created in that Dashboard, and a successful model request with that key.
 Configure new OAuth callbacks for the Dashboard origin. The old Hong Kong
 UnderSky credentials are outside this deployment.
+
+Store the new OAuth application's `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`
+in `.env.oauth`. Google uses `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in
+the same file. The respective callback URLs are
+`https://dashboard.undersky.ai/api/auth/callback/github` and
+`https://dashboard.undersky.ai/api/auth/callback/google`. The homepage URL is
+`https://undersky.ai`. After updating the private file, recreate only Dashboard:
+
+```bash
+docker compose --env-file .env --env-file .images.env up -d dashboard
+```

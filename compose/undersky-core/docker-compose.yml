@@ -18,7 +18,7 @@ services:
   dashboard:
     image: ${DASHBOARD_IMAGE_REF:?DASHBOARD_IMAGE_REF must be an immutable registry digest}
     container_name: undersky-dashboard-${DEPLOY_ENV:-production}
-    env_file: [.env.dashboard]
+    env_file: [.env.dashboard, .env.oauth]
     environment:
       LEAPERONE_LEGACY_DATABASE: "true"
     ports: ["127.0.0.1:${DASHBOARD_PORT:?DASHBOARD_PORT must be supplied by the host}:3000"]

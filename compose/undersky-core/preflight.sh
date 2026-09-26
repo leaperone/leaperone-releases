@@ -14,7 +14,7 @@ for name in WWW DASHBOARD API; do
   (( port > 1024 && port < 65536 )) || fail "$port_var must be an unprivileged loopback port"
 done
 [[ "$WWW_PORT" != "$DASHBOARD_PORT" && "$WWW_PORT" != "$API_PORT" && "$DASHBOARD_PORT" != "$API_PORT" ]] || fail "WWW_PORT, DASHBOARD_PORT, and API_PORT must be distinct"
-for file in .env .env.www .env.dashboard .env.api; do
+for file in .env .env.www .env.dashboard .env.oauth .env.api; do
   [[ -f "$file" ]] || fail "$file is required"
   mode="$(stat -c '%a' "$file" 2>/dev/null || stat -f '%Lp' "$file")"
   [[ "$mode" == 600 ]] || fail "$file must have mode 0600 (found $mode)"
