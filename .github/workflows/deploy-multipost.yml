@@ -204,7 +204,7 @@ jobs:
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_MULTIPOST_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_HOST: https://t.multipost.app
         run: |
-          DOCKER_BUILDKIT=1 docker build \
+          docker buildx build \
             -f ./docker/Dockerfile \
             --target sourcemaps \
             --build-arg NEXT_PUBLIC_SENTRY_DSN="$NEXT_PUBLIC_SENTRY_DSN" \
