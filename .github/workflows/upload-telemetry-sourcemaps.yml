@@ -121,6 +121,8 @@ jobs:
 
           RUST_LOG=error pnpm dlx @posthog/cli@0.8.4 sourcemap upload \
             --directory "$SOURCE_MAP_DIR" \
+            --batch-size 10 \
+            --concurrency 2 \
             --release-name "$POSTHOG_RELEASE_NAME" \
             --release-version "$POSTHOG_RELEASE_VERSION" \
             >"$posthog_log" 2>&1 &
