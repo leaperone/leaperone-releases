@@ -1,0 +1,296 @@
+name: UnderSky core deployment
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Branch, tag, or exact commit SHA to build
+        required: true
+        type: string
+      source_sha:
+        description: Full 40-character source SHA; must match source_ref
+        required: true
+        type: string
+      image_run_id:
+        description: Reuse image metadata from this run; set source_ref to the exact source_sha
+        required: false
+        default: ''
+        type: string
+      deploy:
+        description: Deploy the built digests to the production host
+        required: true
+        type: boolean
+      build_runner:
+        required: true
+        type: string
+      deploy_runner:
+        required: true
+        type: string
+      image_repository:
+        required: true
+        type: string
+      registry:
+        required: true
+        type: string
+      api_url:
+        required: true
+        type: string
+      control_plane_url:
+        required: true
+        type: string
+      dashboard_url:
+        required: true
+        type: string
+      boundary_script:
+        required: true
+        type: string
+    secrets:
+      ALIYUN_DOCKER_USERNAME:
+        required: true
+      ALIYUN_DOCKER_PASSWORD:
+        required: true
+      DE_APP_HOST:
+        required: true
+      DE_APP_USERNAME:
+        required: true
+      DE_APP_SSH_KEY:
+        required: true
+      DE_APP_SSH_HOST_KEY:
+        required: true
+      DE_APP_PORT:
+        required: true
+      APP_DEPLOY_ROOT:
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  IMAGE_REPOSITORY: ${{ inputs.image_repository }}
+  BUILDX_BUILDER: undersky-core-production
+
+jobs:
+  build:
+    name: Build ${{ matrix.component }}
+    if: ${{ github.repository == 'leaperone/UnderSky' && inputs.image_run_id == '' }}
+    runs-on: ${{ fromJSON(inputs.build_runner) }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - component: www
+            dockerfile: apps/www/docker/Dockerfile
+            context: .
+          - component: dashboard
+            dockerfile: apps/dashboard/docker/Dockerfile
+            context: .
+          - component: api
+            dockerfile: apps/api/Dockerfile
+            context: .
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+
+      - name: Verify exact source SHA
+        env:
+          EXPECTED_SHA: ${{ inputs.source_sha }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          DEPLOY: ${{ inputs.deploy }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "ERROR: source_sha must be a full lowercase SHA" >&2; exit 1; }
+          [[ "$actual" == "$EXPECTED_SHA" ]] || { echo "ERROR: source_sha does not match checked out ref" >&2; exit 1; }
+          if [ "$DEPLOY" = true ]; then
+            case "$SOURCE_REF" in
+              main|refs/heads/main|refs/tags/*|"$EXPECTED_SHA") ;;
+              *) echo "ERROR: production requires main, an explicit refs/tags/ release, or source_sha" >&2; exit 1 ;;
+            esac
+          fi
+          echo "Building source $actual (${GITHUB_REPOSITORY})"
+
+      - name: Set up bounded build worker
+        id: builder
+        uses: docker/setup-buildx-action@v3
+        with:
+          name: ${{ env.BUILDX_BUILDER }}
+          version: v0.31.1
+          cache-binary: false
+          keep-state: true
+          driver-opts: |
+            image=moby/buildkit:v0.31.2
+            memory=5g
+            memory-swap=5g
+            cpu-period=100000
+            cpu-quota=400000
+          buildkitd-config-inline: |
+            [worker.oci]
+              gc = true
+              reservedSpace = "4GB"
+              maxUsedSpace = "12GB"
+              minFreeSpace = "10GB"
+
+      - name: Verify build resource limits
+        run: |
+          set -euo pipefail
+          limits="$(docker inspect "buildx_buildkit_${BUILDX_BUILDER}0" --format '{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.CpuPeriod}} {{.HostConfig.CpuQuota}}')"
+          [[ "$limits" == '5368709120 5368709120 100000 400000' ]] || { echo "ERROR: build worker resource limits do not match" >&2; exit 1; }
+
+      - name: Login to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+
+      - name: Build and publish immutable image
+        env:
+          COMPONENT: ${{ matrix.component }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          API_URL: ${{ matrix.component == 'dashboard' && inputs.control_plane_url || inputs.api_url }}
+          DASHBOARD_URL: ${{ inputs.dashboard_url }}
+        run: |
+          set -euo pipefail
+          image="${IMAGE_REPOSITORY}:${COMPONENT}-${SOURCE_SHA}"
+          args=(--build-arg "BUILD_SOURCE_SHA=${SOURCE_SHA}")
+          if [ "$COMPONENT" = www ]; then
+            args+=(--build-arg "API_URL=${API_URL}" --build-arg "NEXT_PUBLIC_DASHBOARD_URL=${DASHBOARD_URL}" --build-arg NEXT_PUBLIC_SITE_REGION=global --build-arg "SENTRY_RELEASE=undersky-www@${SOURCE_SHA}")
+          elif [ "$COMPONENT" = dashboard ]; then
+            args+=(--build-arg "API_URL=${API_URL}" --build-arg "SENTRY_RELEASE=undersky-dashboard@${SOURCE_SHA}")
+          fi
+          docker buildx build \
+            --builder "$BUILDX_BUILDER" \
+            --pull --provenance=false \
+            --file "${{ matrix.dockerfile }}" \
+            --tag "$image" \
+            "${{ matrix.context }}" \
+            "${args[@]}" \
+            --push
+          digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "ERROR: invalid registry digest" >&2; exit 1; }
+          printf '%s\n' "${COMPONENT^^}_IMAGE_REF=${image}@${digest}" > "${COMPONENT}.env"
+
+      - name: Upload immutable image metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: undersky-core-image-${{ matrix.component }}
+          path: ${{ matrix.component }}.env
+          if-no-files-found: error
+
+      - name: Keep this builder cache within its budget
+        if: always() && steps.builder.outcome == 'success'
+        run: docker buildx prune --builder "$BUILDX_BUILDER" --force --max-used-space 12GB --min-free-space 10GB --reserved-space 4GB
+
+  deploy:
+    name: Deploy core containers
+    if: ${{ github.repository == 'leaperone/UnderSky' && !cancelled() && inputs.deploy && (needs.build.result == 'success' || (inputs.image_run_id != '' && needs.build.result == 'skipped')) }}
+    needs: build
+    runs-on: ${{ fromJSON(inputs.deploy_runner) }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout deploy payload
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+
+      - name: Verify runner boundary
+        env:
+          BOUNDARY_SCRIPT: ${{ inputs.boundary_script }}
+        run: bash "$BOUNDARY_SCRIPT" ci
+
+      - name: Validate image reuse request
+        env:
+          IMAGE_RUN_ID: ${{ inputs.image_run_id }}
+          EXPECTED_SHA: ${{ inputs.source_sha }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "ERROR: source_sha must be a full lowercase SHA" >&2; exit 1; }
+          if [ -n "$IMAGE_RUN_ID" ]; then
+            [[ "$IMAGE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: image_run_id must be a positive run ID" >&2; exit 1; }
+            [[ "$SOURCE_REF" == "$EXPECTED_SHA" ]] || { echo "ERROR: image reuse requires source_ref to be the exact source_sha" >&2; exit 1; }
+          fi
+
+      - name: Download image metadata
+        uses: actions/download-artifact@v4
+        with:
+          pattern: undersky-core-image-*
+          path: image-meta
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.image_run_id || github.run_id }}
+
+      - name: Load and validate image references
+        id: images
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]] || { echo "ERROR: deployment source mismatch" >&2; exit 1; }
+          for component in www dashboard api; do
+            file="image-meta/${component}.env"
+            value="$(awk -F= -v key="${component^^}_IMAGE_REF" '$1 == key { print substr($0, index($0,"=")+1); found++ } END { if (found != 1) exit 1 }' "$file")"
+            [[ "$value" =~ ^${IMAGE_REPOSITORY}:${component}-[0-9a-f]{40}@sha256:[0-9a-f]{64}$ ]] || { echo "ERROR: invalid ${component} image metadata" >&2; exit 1; }
+            [[ "$value" == "${IMAGE_REPOSITORY}:${component}-${EXPECTED_SHA}@sha256:"* ]] || { echo "ERROR: image source mismatch" >&2; exit 1; }
+            key="${component^^}_IMAGE_REF"
+            echo "${key}=${value}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Sync compose and deploy scripts
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
+          DE_APP_SSH_HOST_KEY: ${{ secrets.DE_APP_SSH_HOST_KEY }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+          APP_DEPLOY_ROOT: ${{ secrets.APP_DEPLOY_ROOT }}
+        run: |
+          set -euo pipefail
+          : "${DE_APP_HOST:?}" "${DE_APP_USERNAME:?}" "${DE_APP_SSH_KEY:?}" "${DE_APP_SSH_HOST_KEY:?}" "${APP_DEPLOY_ROOT:?}"
+          key_file="$(mktemp)"
+          known_hosts="$(mktemp)"
+          trap 'rm -f "$key_file" "$known_hosts"' EXIT
+          printf '%s\n' "$DE_APP_SSH_KEY" > "$key_file"
+          printf 'undersky-production %s\n' "$DE_APP_SSH_HOST_KEY" > "$known_hosts"
+          chmod 600 "$key_file"
+          target="${APP_DEPLOY_ROOT}/undersky-core/production"
+          ssh_opts=(-i "$key_file" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -o HostKeyAlias=undersky-production -o BatchMode=yes)
+          ssh "${ssh_opts[@]}" -p "$DE_APP_PORT" "${DE_APP_USERNAME}@${DE_APP_HOST}" "mkdir -p $(printf %q "$target")"
+          scp "${ssh_opts[@]}" -P "$DE_APP_PORT" -r .deploy/undersky-core/. "${DE_APP_USERNAME}@${DE_APP_HOST}:${target}/"
+
+      - name: Deploy resolved digests
+        env:
+          DE_APP_HOST: ${{ secrets.DE_APP_HOST }}
+          DE_APP_USERNAME: ${{ secrets.DE_APP_USERNAME }}
+          DE_APP_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
+          DE_APP_SSH_HOST_KEY: ${{ secrets.DE_APP_SSH_HOST_KEY }}
+          DE_APP_PORT: ${{ secrets.DE_APP_PORT }}
+          APP_DEPLOY_ROOT: ${{ secrets.APP_DEPLOY_ROOT }}
+          WWW_IMAGE_REF: ${{ steps.images.outputs.WWW_IMAGE_REF }}
+          DASHBOARD_IMAGE_REF: ${{ steps.images.outputs.DASHBOARD_IMAGE_REF }}
+          API_IMAGE_REF: ${{ steps.images.outputs.API_IMAGE_REF }}
+        run: |
+          set -euo pipefail
+          : "${DE_APP_HOST:?}" "${DE_APP_USERNAME:?}" "${DE_APP_SSH_KEY:?}" "${DE_APP_SSH_HOST_KEY:?}"
+          : "${APP_DEPLOY_ROOT:?}" "${WWW_IMAGE_REF:?}" "${DASHBOARD_IMAGE_REF:?}" "${API_IMAGE_REF:?}"
+          key_file="$(mktemp)"
+          known_hosts="$(mktemp)"
+          trap 'rm -f "$key_file" "$known_hosts"' EXIT
+          printf '%s\n' "$DE_APP_SSH_KEY" > "$key_file"
+          printf 'undersky-production %s\n' "$DE_APP_SSH_HOST_KEY" > "$known_hosts"
+          chmod 600 "$key_file"
+          ssh_opts=(-i "$key_file" -p "$DE_APP_PORT" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known_hosts" -o HostKeyAlias=undersky-production -o BatchMode=yes)
+          remote=$(printf 'set -euo pipefail; export DEPLOY_ENV=production; cd %q; ./deploy-core.sh %q %q %q' \
+            "${APP_DEPLOY_ROOT}/undersky-core/production" \
+            "$WWW_IMAGE_REF" "$DASHBOARD_IMAGE_REF" "$API_IMAGE_REF")
+          # The remote command is quoted with printf %q above.
+          # shellcheck disable=SC2029
+          ssh "${ssh_opts[@]}" "${DE_APP_USERNAME}@${DE_APP_HOST}" "$remote"
