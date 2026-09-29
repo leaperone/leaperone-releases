@@ -9,8 +9,7 @@ branch, pull request, workflow log, artifact, and Git object as public.
   runner registration, or Git history unless the user explicitly requests that
   exact administrative operation.
 - Do not make this repository private as an implementation detail.
-- Production jobs must use GitHub-hosted runners. Do not add `self-hosted`
-  labels or route jobs to private infrastructure runners.
+- Production jobs must use GitHub-hosted runners except for the authorized
 
 ## Information handling
 
@@ -28,9 +27,13 @@ branch, pull request, workflow log, artifact, and Git object as public.
 
 ## Product boundary
 
-- Private products and their deployment/runtime details belong only in their
-  private repositories. Do not add their workflows, compose manifests,
+  and their deployment/runtime details belong only in their private repositories. Do not add their workflows, compose manifests,
   documentation, secrets, artifacts, or source references here.
 - Keep changes limited to public release automation. If a task needs private
   infrastructure context, stop and move that work to the appropriate private
   repository.
+
+
+- The caller supplies runner labels, registry and endpoint configuration, and
+  deployment secrets. Do not commit their infrastructure values here.
+- Runs, source checkout, logs, image metadata, and deployment payloads stay in

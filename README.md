@@ -8,3 +8,7 @@ inventories, migration runbooks, credentials, private product configuration,
 and operational records do not belong in this repository.
 
 See `AGENTS.md` before making changes.
+
+application repository calls a pinned commit of these reusable workflows.
+Execution, credentials, logs, and artifacts belong to the private caller.
+CLI automation remains in the application repository.
