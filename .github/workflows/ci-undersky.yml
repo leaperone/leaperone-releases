@@ -1,0 +1,147 @@
+name: UnderSky application CI
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        required: true
+        type: string
+      boundary_script:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    if: github.repository == 'leaperone/UnderSky' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: undersky_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: undersky_ci_only
+        ports:
+          - 127.0.0.1::5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d undersky_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify runner boundary
+        env:
+          BOUNDARY_SCRIPT: ${{ inputs.boundary_script }}
+        run: bash "$BOUNDARY_SCRIPT" ci
+      - name: Configure isolated test database URL
+        run: |
+          set -euo pipefail
+          host_port='${{ job.services.postgres.ports['5432'] }}'
+          [[ "$host_port" =~ ^[0-9]+$ && "$host_port" != 5432 ]] || { echo "ERROR: postgres service did not publish an ephemeral host port" >&2; exit 1; }
+          echo "UNDERSKY_TEST_DATABASE_URL=postgresql://postgres:undersky_ci_only@127.0.0.1:${host_port}/undersky_test" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+      - name: Prepare isolated legacy database
+        run: bash scripts/prepare-legacy-test-db.sh
+      - name: API unit and database tests
+        run: cargo test --locked -p undersky-gateway -- --include-ignored
+      - name: Build gateway for HTTP verification
+        run: cargo build --locked -p undersky-gateway
+      - name: Verify HTTP relay and billing against legacy schema
+        run: python3 apps/api/scripts/verify-legacy-http.py
+
+  node:
+    if: github.repository == 'leaperone/UnderSky' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: undersky_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: undersky_ci_only
+        ports:
+          - 127.0.0.1::5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d undersky_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify runner boundary
+        env:
+          BOUNDARY_SCRIPT: ${{ inputs.boundary_script }}
+        run: bash "$BOUNDARY_SCRIPT" ci
+      - name: Configure isolated test database URL
+        run: |
+          set -euo pipefail
+          host_port='${{ job.services.postgres.ports['5432'] }}'
+          [[ "$host_port" =~ ^[0-9]+$ && "$host_port" != 5432 ]] || { echo "ERROR: postgres service did not publish an ephemeral host port" >&2; exit 1; }
+          echo "UNDERSKY_TEST_DATABASE_URL=postgresql://postgres:undersky_ci_only@127.0.0.1:${host_port}/undersky_test" >> "$GITHUB_ENV"
+          echo "DATABASE_URL=postgresql://postgres:undersky_ci_only@127.0.0.1:${host_port}/undersky_test" >> "$GITHUB_ENV"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Catalog typecheck
+        run: pnpm --filter @leaperone/undersky-catalog check
+      - name: Payments unit tests
+        run: pnpm --filter @leaperone/undersky-payments exec vitest run
+      - name: Control-plane unit tests
+        run: pnpm --filter @leaperone/undersky-control-plane exec vitest run
+      - name: Control-plane HTTP typecheck
+        run: pnpm typecheck:control-plane
+      - name: Dashboard security, billing, and metadata tests
+        run: >
+          pnpm --filter @leaperone/undersky-dashboard exec vitest run
+          __tests__/auth-security-boundaries.test.ts
+          __tests__/money-path-boundary.test.ts
+          __tests__/phase1-security.test.ts
+          __tests__/seo.test.ts
+      - name: WWW commercial catalog tests
+        run: pnpm --filter @leaperone/undersky-www test:seo-commercial
+      - name: Dashboard typegen and typecheck
+        run: |
+          set -euo pipefail
+          pnpm --filter @leaperone/undersky-dashboard exec next typegen
+          pnpm typecheck:dashboard
+      - name: Legacy database login and API key verification
+        env:
+          LEAPERONE_LEGACY_DATABASE: "true"
+          BETTER_AUTH_SECRET: undersky-ci-auth-secret-only-not-for-production
+        run: |
+          set -euo pipefail
+          bash scripts/prepare-legacy-test-db.sh
+          dashboard_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+          export BASE_URL="http://127.0.0.1:${dashboard_port}"
+          export BETTER_AUTH_URL="$BASE_URL"
+          setsid pnpm --filter @leaperone/undersky-dashboard exec next dev -H 127.0.0.1 -p "$dashboard_port" > "$RUNNER_TEMP/undersky-dashboard.log" 2>&1 &
+          server_pid=$!
+          stop_dashboard() {
+            kill -- "-${server_pid}" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap stop_dashboard EXIT
+          for _ in $(seq 1 90); do
+            if curl -fsS "${BASE_URL}/api/ready" >/dev/null; then break; fi
+            kill -0 "$server_pid" || { cat "$RUNNER_TEMP/undersky-dashboard.log"; exit 1; }
+            sleep 1
+          done
+          if ! pnpm --filter @leaperone/undersky-dashboard exec vitest run __tests__/legacy-database-auth.test.ts; then
+            cat "$RUNNER_TEMP/undersky-dashboard.log"
+            exit 1
+          fi
+          stop_dashboard
+          trap - EXIT
