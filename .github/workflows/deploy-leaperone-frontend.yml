@@ -44,6 +44,9 @@ on:
       image_digest:
         description: "Published registry manifest digest"
         value: ${{ jobs.build.outputs.image_digest }}
+      sourcemap_bundle_key:
+        description: "Exact source map bundle staged by the build job"
+        value: ${{ jobs.build.outputs.sourcemap_bundle_key }}
 
 jobs:
   build:
@@ -52,6 +55,7 @@ jobs:
       source_sha: ${{ steps.source.outputs.sha }}
       image_ref: ${{ steps.publish.outputs.image_ref }}
       image_digest: ${{ steps.publish.outputs.image_digest }}
+      sourcemap_bundle_key: ${{ steps.sourcemaps.outputs.bundle_key }}
     steps:
       - name: Validate deploy request
         id: request
@@ -334,6 +338,7 @@ jobs:
           persist-credentials: false
 
       - name: Stage exact-build source maps on the deployment node
+        id: sourcemaps
         env:
           SOURCEMAP_SPOOL_HOST: ${{ secrets.DE_APP_HOST }}
           SOURCEMAP_SPOOL_PORT: ${{ vars.DE_APP_PORT || '22' }}
@@ -341,7 +346,9 @@ jobs:
           SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.DE_APP_SSH_KEY }}
           SOURCEMAP_SPOOL_ROOT: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
           BUNDLE_KEY: leaperone-${{ inputs.site_variant == 'cn' && 'www-cn' || inputs.component }}/${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.source.outputs.sha }}.tar
-        run: .release-automation/scripts/stage-sourcemap-bundle.sh "$RUNNER_TEMP/sourcemaps.tar" "$BUNDLE_KEY"
+        run: |
+          .release-automation/scripts/stage-sourcemap-bundle.sh "$RUNNER_TEMP/sourcemaps.tar" "$BUNDLE_KEY"
+          echo "bundle_key=$BUNDLE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Remove frontend BuildKit secret
         if: always() && steps.build-secret.outputs.actions_path != ''
@@ -394,7 +401,7 @@ jobs:
     needs: build
     uses: ./.github/workflows/upload-telemetry-sourcemaps.yml
     with:
-      bundle_key: leaperone-${{ inputs.site_variant == 'cn' && 'www-cn' || inputs.component }}/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build.outputs.source_sha }}.tar
+      bundle_key: ${{ needs.build.outputs.sourcemap_bundle_key }}
       posthog_release_name: ${{ inputs.site_variant == 'cn' && 'LEAPERone www-cn' || format('LEAPERone {0}', inputs.component) }}
       posthog_release_version: ${{ needs.build.outputs.source_sha }}
       posthog_project_id: ${{ vars.POSTHOG_LEAPERONE_PROJECT_ID }}
