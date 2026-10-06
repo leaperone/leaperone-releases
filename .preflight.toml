@@ -9,7 +9,7 @@ build = ""
 [[scope]]
 prefix = ".github/workflows/"
 name = "GitHub Actions workflows"
-check = "git diff --check \"$(git merge-base HEAD origin/main)\" HEAD"
+check = 'BASE_SHA=$(node -p "require(process.argv[1]).base_sha" "$PREFLIGHT_DIR/base.json") && MERGE_BASE=$(git merge-base HEAD "$BASE_SHA") && git diff --check "$MERGE_BASE" -- .github/workflows/'
 # Keep the existing workflow baseline diagnostics visible in the workflow CI; preflight ignores only those known findings.
 build = '''changed_workflows=$(grep '^\.github/workflows/' "$PREFLIGHT_DIR/changed-files")
 printf '%s\n' "$changed_workflows" | xargs actionlint \
