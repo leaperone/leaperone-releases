@@ -1,0 +1,24 @@
+base_branch = "main"
+
+[[scope]]
+prefix = ".preflight.toml"
+name = "Preflight configuration"
+check = ""
+build = ""
+
+[[scope]]
+prefix = ".github/workflows/"
+name = "GitHub Actions workflows"
+check = "git diff --check \"$(git merge-base HEAD origin/main)\" HEAD"
+# Keep the existing workflow baseline diagnostics visible in the workflow CI; preflight ignores only those known findings.
+build = '''changed_workflows=$(grep '^\.github/workflows/' "$PREFLIGHT_DIR/changed-files")
+printf '%s\n' "$changed_workflows" | xargs actionlint \
+  -ignore '.*property "message" is not defined in object type.*' \
+  -ignore '.*property "env" is not defined in object type.*' \
+  -ignore '.*shellcheck reported issue in this script: SC2034:.*' \
+  -ignore '.*shellcheck reported issue in this script: SC2086:.*' \
+  -ignore '.*shellcheck reported issue in this script: SC2129:.*' \
+  -ignore '.*shellcheck reported issue in this script: SC2269:.*' '''
+
+[report]
+language = "zh"
