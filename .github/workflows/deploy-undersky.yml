@@ -54,7 +54,8 @@ jobs:
           ' "$EVENT_PATH" >/dev/null
           jq -r '
             .client_payload as $p |
-            (if ($p.source_ref | type == "string" and length > 0) then $p.source_ref else $p.ref end) as $source_ref |
+            (if ($p.source_ref | type == "string" and length > 0) then $p.source_ref else $p.ref end) as $raw |
+            (if (($p.pointed_tag | type == "string" and length > 0) and ($p.pointed_tag == $raw) and ($raw | startswith("refs/") | not)) then "refs/tags/" + $raw else $raw end) as $source_ref |
             (if ($p | has("deploy")) then $p.deploy else true end) as $deploy |
             "source_ref=\($source_ref)",
             "source_sha=\($p.source_sha)",
