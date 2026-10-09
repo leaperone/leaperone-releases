@@ -3,6 +3,10 @@ name: UnderSky core deployment
 on:
   workflow_call:
     inputs:
+      source_repository:
+        description: Repository containing the application source
+        required: true
+        type: string
       source_ref:
         description: Branch, tag, or exact commit SHA to build
         required: true
@@ -45,6 +49,8 @@ on:
         required: true
         type: string
     secrets:
+      ACCESS_TOKEN:
+        required: true
       ALIYUN_DOCKER_USERNAME:
         required: true
       ALIYUN_DOCKER_PASSWORD:
@@ -73,7 +79,7 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.component }}
-    if: ${{ github.repository == 'leaperone/UnderSky' && inputs.image_run_id == '' }}
+    if: ${{ inputs.image_run_id == '' }}
     runs-on: ${{ fromJSON(inputs.build_runner) }}
     timeout-minutes: 45
     strategy:
@@ -94,6 +100,8 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
+          repository: ${{ inputs.source_repository }}
+          token: ${{ secrets.ACCESS_TOKEN }}
           ref: ${{ inputs.source_ref }}
           persist-credentials: false
 
@@ -189,7 +197,7 @@ jobs:
 
   deploy:
     name: Deploy core containers
-    if: ${{ github.repository == 'leaperone/UnderSky' && !cancelled() && inputs.deploy && (needs.build.result == 'success' || (inputs.image_run_id != '' && needs.build.result == 'skipped')) }}
+    if: ${{ !cancelled() && inputs.deploy && (needs.build.result == 'success' || (inputs.image_run_id != '' && needs.build.result == 'skipped')) }}
     needs: build
     runs-on: ${{ fromJSON(inputs.deploy_runner) }}
     timeout-minutes: 30
@@ -197,6 +205,8 @@ jobs:
       - name: Checkout deploy payload
         uses: actions/checkout@v4
         with:
+          repository: ${{ inputs.source_repository }}
+          token: ${{ secrets.ACCESS_TOKEN }}
           ref: ${{ inputs.source_sha }}
           persist-credentials: false
 
