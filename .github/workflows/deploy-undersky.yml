@@ -1,0 +1,75 @@
+name: Deploy UnderSky
+
+on:
+  repository_dispatch:
+    types: [deploy-undersky]
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag, or exact UnderSky commit SHA
+        required: true
+        default: main
+        type: string
+      source_sha:
+        description: Full 40-character UnderSky source SHA
+        required: true
+        type: string
+      deploy:
+        description: Deploy the built digests to production
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: undersky-core-production
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    if: github.event_name == 'repository_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      source_ref: ${{ steps.payload.outputs.source_ref }}
+      source_sha: ${{ steps.payload.outputs.source_sha }}
+      deploy: ${{ steps.payload.outputs.deploy }}
+    steps:
+      - name: Validate dispatch payload
+        id: payload
+        env:
+          EVENT_PATH: ${{ github.event_path }}
+        run: |
+          set -euo pipefail
+          jq -e '.client_payload |
+            (.source_sha | type == "string" and test("^[0-9a-f]{40}$")) and
+            (.source_ref | type == "string" and length > 0) and
+            ((has("deploy") | not) or (.deploy | type == "boolean")) and
+            (keys - ["source_ref", "source_sha", "deploy"] | length == 0)
+          ' "$EVENT_PATH" >/dev/null
+          jq -r '.client_payload |
+            "source_ref=\(.source_ref)",
+            "source_sha=\(.source_sha)",
+            "deploy=\(if has("deploy") then .deploy else false end)"
+          ' "$EVENT_PATH" >> "$GITHUB_OUTPUT"
+
+  core:
+    needs: dispatch
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.dispatch.result == 'success') }}
+    uses: ./.github/workflows/deploy-undersky-core.yml
+    with:
+      source_repository: leaperone/UnderSky
+      source_ref: ${{ github.event_name == 'repository_dispatch' && needs.dispatch.outputs.source_ref || inputs.source_ref }}
+      source_sha: ${{ github.event_name == 'repository_dispatch' && needs.dispatch.outputs.source_sha || inputs.source_sha }}
+      deploy: ${{ github.event_name == 'repository_dispatch' && needs.dispatch.outputs.deploy == 'true' || inputs.deploy == true }}
+      build_runner: '["self-hosted", "Linux", "X64", "pve"]'
+      deploy_runner: '["self-hosted", "linux", "x64", "dokilove", "production", "de"]'
+      image_repository: registry.cn-hongkong.aliyuncs.com/leaperone/undersky
+      registry: registry.cn-hongkong.aliyuncs.com
+      api_url: https://api.undersky.ai
+      control_plane_url: https://api.leaper.one
+      dashboard_url: https://dashboard.undersky.ai
+      boundary_script: .github/scripts/verify-dokilove-runner-boundary.sh
+    secrets: inherit
