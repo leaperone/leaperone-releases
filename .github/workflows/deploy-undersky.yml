@@ -76,5 +76,5 @@ jobs:
       api_url: https://api.undersky.ai
       control_plane_url: https://api.leaper.one
       dashboard_url: https://dashboard.undersky.ai
-      boundary_script: .github/scripts/verify-dokilove-runner-boundary.sh
+      boundary_script: scripts/verify-dokilove-runner-boundary.sh
     secrets: inherit
