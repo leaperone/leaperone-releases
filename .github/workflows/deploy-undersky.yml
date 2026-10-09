@@ -39,8 +39,6 @@ jobs:
     steps:
       - name: Validate dispatch payload
         id: payload
-        env:
-          EVENT_PATH: ${{ github.event_path }}
         run: |
           set -euo pipefail
           jq -e '
@@ -51,7 +49,7 @@ jobs:
               ($p.ref | type == "string" and length > 0)
             ) and
             (($p | has("deploy") | not) or ($p.deploy | type == "boolean"))
-          ' "$EVENT_PATH" >/dev/null
+          ' "$GITHUB_EVENT_PATH" >/dev/null
           jq -r '
             .client_payload as $p |
             (if ($p.source_ref | type == "string" and length > 0) then $p.source_ref else $p.ref end) as $raw |
@@ -60,7 +58,7 @@ jobs:
             "source_ref=\($source_ref)",
             "source_sha=\($p.source_sha)",
             "deploy=\($deploy)"
-          ' "$EVENT_PATH" >> "$GITHUB_OUTPUT"
+          ' "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
 
   core:
     needs: dispatch
