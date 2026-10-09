@@ -43,16 +43,22 @@ jobs:
           EVENT_PATH: ${{ github.event_path }}
         run: |
           set -euo pipefail
-          jq -e '.client_payload |
-            (.source_sha | type == "string" and test("^[0-9a-f]{40}$")) and
-            (.source_ref | type == "string" and length > 0) and
-            ((has("deploy") | not) or (.deploy | type == "boolean")) and
-            (keys - ["source_ref", "source_sha", "deploy"] | length == 0)
+          jq -e '
+            .client_payload as $p |
+            ($p.source_sha | type == "string" and test("^[0-9a-f]{40}$")) and
+            (
+              ($p.source_ref | type == "string" and length > 0) or
+              ($p.ref | type == "string" and length > 0)
+            ) and
+            (($p | has("deploy") | not) or ($p.deploy | type == "boolean"))
           ' "$EVENT_PATH" >/dev/null
-          jq -r '.client_payload |
-            "source_ref=\(.source_ref)",
-            "source_sha=\(.source_sha)",
-            "deploy=\(if has("deploy") then .deploy else false end)"
+          jq -r '
+            .client_payload as $p |
+            (if ($p.source_ref | type == "string" and length > 0) then $p.source_ref else $p.ref end) as $source_ref |
+            (if ($p | has("deploy")) then $p.deploy else true end) as $deploy |
+            "source_ref=\($source_ref)",
+            "source_sha=\($p.source_sha)",
+            "deploy=\($deploy)"
           ' "$EVENT_PATH" >> "$GITHUB_OUTPUT"
 
   core:
