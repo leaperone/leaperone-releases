@@ -57,19 +57,19 @@ trap cleanup EXIT
 umask 077
 install -d -m 700 "$(dirname "$bundle_path")"
 printf '%s\n' "$SOURCEMAP_SPOOL_SSH_KEY" > "$key_file"
-ssh-keyscan -H -p "$spool_port" "$SOURCEMAP_SPOOL_HOST" > "$known_hosts_file" 2>/dev/null
+timeout --foreground 30s ssh-keyscan -H -T 15 -p "$spool_port" "$SOURCEMAP_SPOOL_HOST" > "$known_hosts_file" 2>/dev/null
 
 remote_bundle="${SOURCEMAP_SPOOL_ROOT%/}/$bundle_key"
-rsync_command="ssh -i \"$key_file\" -p \"$spool_port\" -o UserKnownHostsFile=\"$known_hosts_file\" -o StrictHostKeyChecking=yes -o BatchMode=yes"
+rsync_command="ssh -i \"$key_file\" -p \"$spool_port\" -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o UserKnownHostsFile=\"$known_hosts_file\" -o StrictHostKeyChecking=yes -o BatchMode=yes"
 
-rsync -a \
+timeout --foreground 10m rsync -a \
   --partial \
   --append-verify \
   -e "$rsync_command" \
   "$SOURCEMAP_SPOOL_USERNAME@$SOURCEMAP_SPOOL_HOST:$remote_bundle" \
   "$bundle_path"
 
-rsync -a \
+timeout --foreground 2m rsync -a \
   -e "$rsync_command" \
   "$SOURCEMAP_SPOOL_USERNAME@$SOURCEMAP_SPOOL_HOST:$remote_bundle.sha256" \
   "$checksum_path"
