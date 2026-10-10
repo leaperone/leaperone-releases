@@ -426,6 +426,42 @@ jobs:
         run: |
           cd apps/web
 
+          if grep -q 'gin_trgm_ops' atlas/main/migrations/*.sql; then
+            if ! command -v psql >/dev/null; then
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq postgresql-client
+            fi
+            prerequisite_url=$(node --input-type=module <<'NODE'
+          try {
+            const url = new URL(process.env.TWOSOMEREN_DATABASE_URL);
+            if (!['postgres:', 'postgresql:'].includes(url.protocol)) process.exit(1);
+            url.searchParams.delete('search_path');
+            url.searchParams.delete('schema');
+            url.searchParams.delete('options');
+            url.searchParams.set('connect_timeout', '10');
+            process.stdout.write(url.toString());
+          } catch {
+            process.exit(1);
+          }
+          NODE
+            ) || { echo '::error::Cannot parse main database configuration for the trigram prerequisite check'; exit 1; }
+            prerequisite=$(PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=10000' \
+              psql "$prerequisite_url" -X -qAt -v ON_ERROR_STOP=1 -c "
+                SELECT EXISTS (
+                  SELECT 1 FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+                  WHERE e.extname = 'pg_trgm' AND n.nspname = 'public'
+                ) AND EXISTS (
+                  SELECT 1 FROM pg_opclass c
+                  JOIN pg_namespace n ON n.oid = c.opcnamespace
+                  JOIN pg_am a ON a.oid = c.opcmethod
+                  WHERE c.opcname = 'gin_trgm_ops' AND n.nspname = 'public' AND a.amname = 'gin'
+                );" 2>/dev/null) || { echo '::error::Cannot verify the main database trigram prerequisite'; exit 1; }
+            if [ "$prerequisite" != 't' ]; then
+              echo '::error::Trigram migrations require pg_trgm in public. Arrange an explicitly authorized extension installation before release.'
+              exit 1
+            fi
+          fi
+
           echo "Running main DB migration..."
           atlas migrate apply --env=production --config="file://atlas/main/atlas.hcl"
 
@@ -488,6 +524,14 @@ jobs:
       - name: Build atlas source files
         working-directory: apps/web
         run: bash scripts/atlas-build-source.sh
+
+      - name: Initialize isolated Atlas trigram support
+        working-directory: apps/web
+        run: |
+          if grep -q 'gin_trgm_ops' atlas/main/migrations/*.sql; then
+            docker exec "${{ job.services.postgres.id }}" psql -U postgres -d dev -X -q -v ON_ERROR_STOP=1 \
+              -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA pg_catalog;'
+          fi
 
       - name: Schema drift check (main)
         working-directory: apps/web
