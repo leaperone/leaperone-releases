@@ -101,7 +101,8 @@ jobs:
         run: pnpm --filter @leaperone/undersky-payments exec vitest run
       - name: Control-plane unit tests
         run: pnpm --filter @leaperone/undersky-control-plane exec vitest run
-      - name: Control-plane HTTP typecheck
+      - name: Legacy control-plane HTTP typecheck
+        if: ${{ hashFiles('apps/control-plane/package.json') != '' }}
         run: pnpm typecheck:control-plane
       - name: Dashboard security, billing, and metadata tests
         run: >
