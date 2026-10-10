@@ -46,7 +46,7 @@ on:
 jobs:
   upload:
     runs-on: [self-hosted, Linux, X64, pve]
-    timeout-minutes: 30
+    timeout-minutes: 240
     steps:
       - name: Checkout release automation
         uses: actions/checkout@v6
@@ -119,7 +119,7 @@ jobs:
           posthog_log="$RUNNER_TEMP/posthog-sourcemaps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
           sentry_log="$RUNNER_TEMP/sentry-sourcemaps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
 
-          timeout --foreground 10m env RUST_LOG=error pnpm dlx @posthog/cli@0.8.4 sourcemap upload \
+          env RUST_LOG=error pnpm dlx @posthog/cli@0.8.4 sourcemap upload \
             --directory "$SOURCE_MAP_DIR" \
             --batch-size 10 \
             --concurrency 2 \
@@ -129,13 +129,13 @@ jobs:
           posthog_pid=$!
 
           (
-            if ! timeout --foreground 10m pnpm dlx @sentry/cli@2.58.5 releases info "$SENTRY_RELEASE" >/dev/null 2>&1; then
-              timeout --foreground 10m pnpm dlx @sentry/cli@2.58.5 releases new "$SENTRY_RELEASE"
+            if ! pnpm dlx @sentry/cli@2.58.5 releases info "$SENTRY_RELEASE" >/dev/null 2>&1; then
+              pnpm dlx @sentry/cli@2.58.5 releases new "$SENTRY_RELEASE"
             fi
-            timeout --foreground 10m pnpm dlx @sentry/cli@2.58.5 sourcemaps upload \
+            pnpm dlx @sentry/cli@2.58.5 sourcemaps upload \
               --release "$SENTRY_RELEASE" \
               "$SOURCE_MAP_DIR"
-            timeout --foreground 10m pnpm dlx @sentry/cli@2.58.5 releases finalize "$SENTRY_RELEASE"
+            pnpm dlx @sentry/cli@2.58.5 releases finalize "$SENTRY_RELEASE"
           ) >"$sentry_log" 2>&1 &
           sentry_pid=$!
 
