@@ -9,7 +9,7 @@
 #
 # 部署由通用入口探测到同目录可执行的 deploy-bluegreen.sh 后委派执行：
 #   COLOR=<color> WEB_PORT=<port> docker compose -p multipost-web-<color> -f docker-compose.web.yml up -d --pull always
-# IMAGE_TAG 仍来自 .env（现网 = latest）。
+# IMAGE_TAG 由 deploy-bluegreen.sh 导出为 latest@<本次推送的 digest>。
 name: multipost-web-${COLOR:-blue}
 
 services:

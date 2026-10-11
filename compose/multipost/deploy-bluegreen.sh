@@ -4,7 +4,8 @@
 # 由通用部署入口调用（无参数）。
 #
 # 端口: blue=9900  green=9910
-# 镜像: 沿用 .env 的 IMAGE_TAG（现网 = latest）；`up --pull always` 拉最新构建。
+# 镜像: REGISTRY_HOST 与 COMPONENT_IMAGE_DIGESTS（component=sha256:...）由 workflow 传入，
+#       每个被选组件固定到本次推送的 manifest digest；.env 中的 registry/tag 不参与。
 #
 # 范围: web 做蓝绿（零停机）。video-stt-worker 是无端口单例 worker，backend 是 Germany 唯一
 #       的 cron 单例。DEPLOY_COMPONENTS 可限制本次只部署 web/backend/video-stt-worker。
@@ -83,6 +84,58 @@ if [ "$WANT_WEB" = false ] && [ "$WANT_BACKEND" = false ] && [ "$WANT_VIDEO_STT"
 fi
 echo "==> selected components: web=${WANT_WEB} backend=${WANT_BACKEND} video-stt-worker=${WANT_VIDEO_STT}"
 
+# ── 镜像固定：latest 系列 tag 会漂移，每个被选组件必须带本次推送的 manifest digest ──
+# shell 导出的变量优先于 .env，所以 .env 里残留的旧 registry / tag 不会生效。
+REGISTRY_HOST="${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}"
+if ! [[ "$REGISTRY_HOST" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$ ]] \
+  || [[ "$REGISTRY_HOST" =~ ^[0-9.]+$ ]]; then
+  echo "ERROR: REGISTRY_HOST must be a lowercase registry host with optional port and no scheme or path" >&2
+  exit 1
+fi
+export REGISTRY_HOST
+IMAGE_REPOSITORY="${REGISTRY_HOST}/leaperone/multipost"
+
+WEB_DIGEST=""
+BACKEND_DIGEST=""
+VIDEO_STT_DIGEST=""
+DIGEST_LIST=()
+IFS=',' read -ra DIGEST_LIST <<< "${COMPONENT_IMAGE_DIGESTS:-}"
+for entry in ${DIGEST_LIST[@]+"${DIGEST_LIST[@]}"}; do
+  entry="${entry//[[:space:]]/}"
+  [ -n "$entry" ] || continue
+  name="${entry%%=*}"
+  digest="${entry#*=}"
+  if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "ERROR: invalid image digest for component ${name}" >&2
+    exit 1
+  fi
+  case "$name" in
+    web) WEB_DIGEST="$digest" ;;
+    backend) BACKEND_DIGEST="$digest" ;;
+    video-stt-worker) VIDEO_STT_DIGEST="$digest" ;;
+    *) echo "ERROR: unknown COMPONENT_IMAGE_DIGESTS entry: ${name}" >&2; exit 1 ;;
+  esac
+done
+
+require_digest() {
+  if [ -z "$2" ]; then
+    echo "ERROR: $1 is selected without a pinned image digest in COMPONENT_IMAGE_DIGESTS" >&2
+    exit 1
+  fi
+}
+if [ "$WANT_WEB" = true ]; then
+  require_digest web "$WEB_DIGEST"
+  export IMAGE_TAG="latest@${WEB_DIGEST}"
+fi
+if [ "$WANT_BACKEND" = true ]; then
+  require_digest backend "$BACKEND_DIGEST"
+  export BACKEND_IMAGE_TAG="backend-latest@${BACKEND_DIGEST}"
+fi
+if [ "$WANT_VIDEO_STT" = true ]; then
+  require_digest video-stt-worker "$VIDEO_STT_DIGEST"
+  export VIDEO_STT_WORKER_IMAGE_TAG="video-stt-worker-latest@${VIDEO_STT_DIGEST}"
+fi
+
 # ── 部署锁（flock）：非阻塞，拿不到锁说明已有部署在跑，直接退出 ──────────────────
 LOCK_FILE=/run/multipost-bluegreen.lock
 { exec 9>"$LOCK_FILE"; } 2>/dev/null || exec 9>/tmp/multipost-bluegreen.lock
@@ -118,23 +171,101 @@ probe_via_origin() {
     "https://${host}:${ORIGIN_PORT}${path}" >/dev/null 2>&1
 }
 
+# 容器实际运行镜像的 RepoDigest（优先本次 registry）。回退基线取自这里，而不是会漂移的 tag。
+container_repo_digest() {
+  local container="$1" image_id
+  image_id="$(docker inspect --format '{{.Image}}' "$container" 2>/dev/null)" || return 0
+  docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image_id" 2>/dev/null \
+    | awk -v selected="${IMAGE_REPOSITORY}@" '
+        index($0, selected) == 1 { print; found = 1; exit }
+        /\/leaperone\/multipost@sha256:[0-9a-f]+$/ && fallback == "" { fallback = $0 }
+        END { if (!found && fallback != "") print fallback }
+      ' || true
+}
+
+container_runs_digest() {
+  local container="$1" digest="$2" image_id
+  image_id="$(docker inspect --format '{{.Image}}' "$container" 2>/dev/null)" || return 1
+  docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image_id" \
+    | grep -Fx "${IMAGE_REPOSITORY}@${digest}" >/dev/null
+}
+
+record_deployment() {
+  local component="$1" baseline="$2" deployed="$3" record_dir record_file
+  [ -n "${DEPLOY_STATE_ROOT:-}" ] || return 0
+  record_dir="${DEPLOY_STATE_ROOT}/deployments"
+  record_file="${record_dir}/multipost-deployments.jsonl"
+  install -d -m 0700 "$record_dir"
+  [ -f "$record_file" ] || install -m 0600 /dev/null "$record_file"
+  printf '{"component":"%s","baseline_ref":"%s","deployed_ref":"%s","releases_sha":"%s","deployed_at":"%s"}\n' \
+    "$component" "$baseline" "$deployed" "${RELEASES_SHA:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$record_file"
+}
+
+# 回退到基线 RepoDigest：registry 取自基线本身，本地已有镜像时不需要访问 registry。
+restore_resident_service() {
+  local service="$1" container="$2" tag_var="$3" tag_prefix="$4" baseline="$5"
+  local compose_args=(-f "$WORKER_COMPOSE")
+  [ "$service" = backend ] && compose_args+=(--profile backend)
+  if [ -z "$baseline" ]; then
+    echo "ERROR: ${service} has no recorded baseline digest; manual recovery required" >&2
+    return 1
+  fi
+  echo "==> restoring ${service} to baseline ${baseline}" >&2
+  env REGISTRY_HOST="${baseline%%/leaperone/multipost@*}" "${tag_var}=${tag_prefix}@${baseline##*@}" \
+    docker compose "${compose_args[@]}" up -d --pull missing --wait --wait-timeout 180 "$service" || return 1
+  docker inspect --format '{{.State.Running}}' "$container" | grep -qx true
+}
+
 ensure_resident_services() {
   local services=()
   local compose_args=(-f "$WORKER_COMPOSE")
+  local backend_baseline="" worker_baseline="" failed=0
   if [ "$WANT_VIDEO_STT" = true ]; then
     services+=(video-stt-worker)
+    worker_baseline="$(container_repo_digest multipost-video-stt-worker-production)"
+    echo "==> video-stt-worker baseline: ${worker_baseline:-none}"
   fi
   if [ "$WANT_BACKEND" = true ]; then
     services+=(backend)
     compose_args+=(--profile backend)
+    backend_baseline="$(container_repo_digest multipost-backend-production)"
+    echo "==> backend baseline: ${backend_baseline:-none}"
   fi
   if [ "${#services[@]}" -eq 0 ]; then
     echo "==> no resident services selected; skipping worker/backend update"
     return 0
   fi
   # 不加 --remove-orphans：避免误删尚保留作回滚的 legacy web 容器（multipost-web-production）。
-  echo "==> ensuring resident services are up to date: ${services[*]}"
-  docker compose "${compose_args[@]}" up -d --pull always "${services[@]}"
+  echo "==> ensuring resident services run their pinned digests: ${services[*]}"
+  docker compose "${compose_args[@]}" up -d --pull always --wait --wait-timeout 180 "${services[@]}" || failed=1
+  if [ "$failed" = 0 ] && [ "$WANT_VIDEO_STT" = true ] \
+    && ! container_runs_digest multipost-video-stt-worker-production "$VIDEO_STT_DIGEST"; then
+    echo "ERROR: video-stt-worker is not running ${IMAGE_REPOSITORY}@${VIDEO_STT_DIGEST}" >&2
+    failed=1
+  fi
+  if [ "$failed" = 0 ] && [ "$WANT_BACKEND" = true ] \
+    && ! container_runs_digest multipost-backend-production "$BACKEND_DIGEST"; then
+    echo "ERROR: backend is not running ${IMAGE_REPOSITORY}@${BACKEND_DIGEST}" >&2
+    failed=1
+  fi
+  if [ "$failed" != 0 ]; then
+    echo "ERROR: resident service update failed; restoring baselines" >&2
+    if [ "$WANT_VIDEO_STT" = true ]; then
+      restore_resident_service video-stt-worker multipost-video-stt-worker-production \
+        VIDEO_STT_WORKER_IMAGE_TAG video-stt-worker-latest "$worker_baseline" || true
+    fi
+    if [ "$WANT_BACKEND" = true ]; then
+      restore_resident_service backend multipost-backend-production \
+        BACKEND_IMAGE_TAG backend-latest "$backend_baseline" || true
+    fi
+    return 1
+  fi
+  if [ "$WANT_VIDEO_STT" = true ]; then
+    record_deployment video-stt-worker "$worker_baseline" "${IMAGE_REPOSITORY}@${VIDEO_STT_DIGEST}"
+  fi
+  if [ "$WANT_BACKEND" = true ]; then
+    record_deployment backend "$backend_baseline" "${IMAGE_REPOSITORY}@${BACKEND_DIGEST}"
+  fi
 }
 
 run_post_deploy_scripts() {
@@ -191,10 +322,26 @@ case "$current_port" in
 esac
 echo "==> active=${current_port} -> deploying idle=${idle_color}:${idle_port}"
 
-# 2. 起 idle 色（active 色不受影响）。COLOR/WEB_PORT 经 shell 覆盖 .env 做 compose 变量替换；
-#    IMAGE_TAG 仍由 .env 提供，--pull always 拉最新构建。
+# 2. 记录 active 色实际运行的 digest 作基线，再起 idle 色（active 色不受影响）。
+#    COLOR/WEB_PORT/IMAGE_TAG 经 shell 覆盖 .env 做 compose 变量替换；IMAGE_TAG 固定到本次 digest。
+web_baseline=""
+active_web_container="$(docker compose -p "multipost-web-${old_color}" -f "$WEB_COMPOSE" ps -q web 2>/dev/null | head -n 1 || true)"
+if [ -z "$active_web_container" ] && docker inspect "$LEGACY_NAME" >/dev/null 2>&1; then
+  active_web_container="$LEGACY_NAME"
+fi
+if [ -n "$active_web_container" ]; then
+  web_baseline="$(container_repo_digest "$active_web_container")"
+fi
+echo "==> web baseline (${old_color}): ${web_baseline:-none}"
 COLOR="$idle_color" WEB_PORT="$idle_port" \
   docker compose -p "multipost-web-${idle_color}" -f "$WEB_COMPOSE" up -d --pull always
+idle_web_container="$(COLOR="$idle_color" WEB_PORT="$idle_port" \
+  docker compose -p "multipost-web-${idle_color}" -f "$WEB_COMPOSE" ps -q web | head -n 1 || true)"
+if [ -z "$idle_web_container" ] || ! container_runs_digest "$idle_web_container" "$WEB_DIGEST"; then
+  echo "ERROR: idle ${idle_color} is not running ${IMAGE_REPOSITORY}@${WEB_DIGEST}; aborting (active untouched)." >&2
+  docker compose -p "multipost-web-${idle_color}" -f "$WEB_COMPOSE" down || true
+  exit 1
+fi
 
 # 3. 探 idle 后端健康
 ok=0
@@ -252,6 +399,7 @@ if [ "$verify_ok" != 1 ]; then
 fi
 rm -f "$backup"
 echo "==> verified: multipost hosts healthy via nginx on ${idle_color}:${idle_port}"
+record_deployment web "$web_baseline" "${IMAGE_REPOSITORY}@${WEB_DIGEST}"
 
 # 6. 停旧色（按 compose project；首迁额外停 legacy 单容器）。均保留容器供回滚。
 echo "==> stopping previous color project multipost-web-${old_color} (if any)"
@@ -273,4 +421,4 @@ fi
 cleanup_images
 
 echo "==> deploy complete: active=${idle_color}:${idle_port}; old (:${current_port}) stopped (kept for rollback)"
-echo "    rollback: start 旧色/${LEGACY_NAME} -> 探 :${current_port} 健康 -> sed upstream 端口改回 ${current_port} -> nginx -t && nginx -s reload"
+echo "    rollback: start 旧色/${LEGACY_NAME} (${web_baseline:-no recorded digest}) -> 探 :${current_port} 健康 -> sed upstream 端口改回 ${current_port} -> nginx -t && nginx -s reload"
