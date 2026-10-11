@@ -11,4 +11,3 @@ See `AGENTS.md` before making changes.
 
 Overseas LEAPERone and MultiPost releases publish to a configurable registry;
 see `docs/overseas-registry.md`.
-
