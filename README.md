@@ -9,6 +9,9 @@ and operational records do not belong in this repository.
 
 See `AGENTS.md` before making changes.
 
+Overseas LEAPERone and MultiPost releases publish to a configurable registry;
+see `docs/overseas-registry.md`.
+
 UnderSky frontend and backend checks and deployment are defined in
 `.github/workflows/ci-undersky.yml` and `deploy-undersky-core.yml`. The private
 application repository calls a pinned commit of these reusable workflows.

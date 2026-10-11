@@ -3,6 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+# The release workflow selects the registry; root .env must not override it.
+DEPLOY_REGISTRY_HOST="${REGISTRY_HOST:-}"
 if [ -f .env ]; then
   set -a
   # Root .env is compose-only; runtime secrets are parsed below without eval.
@@ -10,6 +12,8 @@ if [ -f .env ]; then
   . ./.env
   set +a
 fi
+REGISTRY_HOST="${DEPLOY_REGISTRY_HOST:-${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}}"
+export REGISTRY_HOST
 
 fail() {
   echo "ERROR: $*" >&2
@@ -149,8 +153,10 @@ assert_private_file .env
 assert_private_file .env.dashboard
 
 [ "${DEPLOY_ENV:-production}" = "production" ] || fail "DEPLOY_ENV must be production"
-[ "${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}" = "registry.cn-hongkong.aliyuncs.com" ] || \
-  fail "REGISTRY_HOST must remain registry.cn-hongkong.aliyuncs.com"
+if ! [[ "$REGISTRY_HOST" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$ ]] \
+  || [[ "$REGISTRY_HOST" =~ ^[0-9.]+$ ]]; then
+  fail "REGISTRY_HOST must be a lowercase registry host with optional port and no scheme or path"
+fi
 [[ "${DASHBOARD_IMAGE_TAG:-}" =~ ^dashboard-[0-9a-f]{40}$ ]] || \
   fail "DASHBOARD_IMAGE_TAG must be exactly dashboard-<40 lowercase hex SHA>; latest is forbidden"
 [[ "${DASHBOARD_IMAGE_DIGEST:-}" =~ ^sha256:[0-9a-f]{64}$ ]] || \

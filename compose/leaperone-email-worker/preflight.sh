@@ -89,8 +89,10 @@ assert_env_file "$WORKER_ENV"
 deploy_env="$(require_env "$COMPOSE_ENV" DEPLOY_ENV)"
 [ "$deploy_env" = production ] || fail "DEPLOY_ENV must be production"
 registry_host="$(require_env "$COMPOSE_ENV" REGISTRY_HOST)"
-[ "$registry_host" = registry.cn-hongkong.aliyuncs.com ] || \
-  fail "REGISTRY_HOST must remain registry.cn-hongkong.aliyuncs.com"
+if ! [[ "$registry_host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$ ]] \
+  || [[ "$registry_host" =~ ^[0-9.]+$ ]]; then
+  fail "REGISTRY_HOST must be a lowercase registry host with optional port and no scheme or path"
+fi
 image_tag="$(require_env "$COMPOSE_ENV" EMAIL_WORKER_IMAGE_TAG)"
 [[ "$image_tag" =~ ^email-worker-[0-9a-f]{40}$ ]] || \
   fail "EMAIL_WORKER_IMAGE_TAG must be exactly email-worker-<40 lowercase hex source SHA>"
