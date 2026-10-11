@@ -68,21 +68,25 @@ verify_deployment() {
   [ "$(docker inspect --format '{{index .Config.Labels "com.leaperone.image-digest"}}' "$CONTAINER_NAME")" = "$image_digest" ] || return 1
 }
 
+# The caller's environment may export REGISTRY_HOST, which Compose prefers over
+# .env. Each call passes the host that matches the .env being applied.
 deploy_current_env() {
+  local registry_host="$1"
   "$PREFLIGHT" || return 1
-  docker compose pull || return 1
-  docker compose up -d --remove-orphans --wait --wait-timeout 180 || return 1
+  REGISTRY_HOST="$registry_host" docker compose pull || return 1
+  REGISTRY_HOST="$registry_host" docker compose up -d --remove-orphans --wait --wait-timeout 180 || return 1
 }
 
 restore_previous_env() {
+  local registry_host="$1"
   # Prefer the previously running local RepoDigest so a transient registry or
   # credential failure cannot by itself prevent rollback. Pull only if the
   # local restore path is unavailable.
   if "$PREFLIGHT" &&
-     docker compose up -d --remove-orphans --wait --wait-timeout 180; then
+     REGISTRY_HOST="$registry_host" docker compose up -d --remove-orphans --wait --wait-timeout 180; then
     return 0
   fi
-  deploy_current_env
+  deploy_current_env "$registry_host"
 }
 
 [ "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)" = "$APP_DIR" ] || \
@@ -133,7 +137,7 @@ upsert_env_value "$ENV_FILE" EMAIL_WORKER_SOURCE_SHA "$SOURCE_SHA"
 upsert_env_value "$ENV_FILE" EMAIL_WORKER_RELEASE_TAG "$RELEASE_TAG"
 upsert_env_value "$ENV_FILE" RELEASES_SHA "$RELEASES_SHA"
 
-if deploy_current_env && verify_deployment "$SOURCE_SHA" "$IMAGE_DIGEST" "$RELEASE_TAG" "$RELEASES_SHA" "$REGISTRY_HOST"; then
+if deploy_current_env "$REGISTRY_HOST" && verify_deployment "$SOURCE_SHA" "$IMAGE_DIGEST" "$RELEASE_TAG" "$RELEASES_SHA" "$REGISTRY_HOST"; then
   printf 'Email Worker deploy complete: %s (%s)\n' "$RELEASE_TAG" "$SOURCE_SHA"
   docker compose ps
   exit 0
@@ -143,7 +147,7 @@ echo "ERROR: candidate Email Worker failed; restoring previous deployment" >&2
 cp -p "$backup" "$ENV_FILE"
 
 if [ "$rollback_available" = true ]; then
-  if restore_previous_env && verify_deployment \
+  if restore_previous_env "$previous_registry_host" && verify_deployment \
     "$previous_source_sha" "$previous_digest" "$previous_release_tag" "$previous_releases_sha" \
     "$previous_registry_host"; then
     echo "Automatic rollback succeeded: $previous_release_tag ($previous_source_sha)" >&2
