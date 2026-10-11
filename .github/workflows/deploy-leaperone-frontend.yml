@@ -237,6 +237,9 @@ jobs:
           DASHBOARD_SENTRY_PROJECT: ${{ inputs.component == 'dashboard' && inputs.sentry_project || '' }}
           DASHBOARD_SENTRY_RELEASE: ${{ inputs.component == 'dashboard' && format('leaperone-dashboard@{0}', steps.source.outputs.sha) || '' }}
           NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.build-secret.outputs.actions_path }}
+          # Compose builds through Bake, which now requires an fs entitlement for
+          # the secret file outside the build context.
+          BUILDX_BAKE_ENTITLEMENTS_FS: "0"
         run: docker compose -f docker/docker-compose-build.yml build "leaperone-${COMPONENT}"
 
       - name: Verify CN image compliance and health
