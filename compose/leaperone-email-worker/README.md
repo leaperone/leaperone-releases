@@ -4,7 +4,7 @@
 `@2some.one` 的 SMTP 邮件并提交给 2someone。生产目标固定为：
 
 ```text
-主机：8.217.72.118
+主机：<DEPLOY_HOST>
 目录：/home/leaperone/services/leaperone-email-worker
 容器：leaperone-email-worker-production
 端口：主机 25/tcp -> 容器 2525/tcp
@@ -19,13 +19,16 @@
 `apps/email-worker/deno.json` 的 `version`；tag 指向的 commit 还必须已经合并进
 LEAPERone `main`。Release workflow 使用与镜像一致的 Deno 2.3.3 运行该应用的
 `deno task check` 和 `deno task test`，然后只构建 `apps/email-worker/Dockerfile`，
-并向香港 ACR 推送同一 manifest 的三个标签：
+并向海外发布 registry 推送同一 manifest 的三个标签：
 
 ```text
-registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:email-worker-<40位源码SHA>
-registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:email-worker-vX.Y.Z
-registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:email-worker-latest
+<REGISTRY_HOST>/leaperone/leaperone:email-worker-<40位源码SHA>
+<REGISTRY_HOST>/leaperone/leaperone:email-worker-vX.Y.Z
+<REGISTRY_HOST>/leaperone/leaperone:email-worker-latest
 ```
+
+`<REGISTRY_HOST>` 由 GitHub Secret `DE_REGISTRY_HOST` 选择，未配置时为
+`registry.cn-hongkong.aliyuncs.com`，见 [海外镜像仓库](../../docs/overseas-registry.md)。
 
 版本和 latest 标签仅用于发现；生产 Compose 只接受
 `email-worker-<完整源码 SHA>@sha256:<manifest digest>`。因此重新指向 latest 或
@@ -48,10 +51,10 @@ RepoDigest 和部署标签验证。失败时 `deploy.sh` 恢复旧 `.env` 并重
 
 ## 主机前置条件
 
-- `2some.one` MX 指向香港主机公网 IP `8.217.72.118`。
+- `2some.one` MX 指向香港主机公网 IP `<DEPLOY_HOST>`。
 - 云防火墙和主机防火墙允许公网入站 TCP/25。
 - Postfix、Exim 或其他 SMTP 服务不得占用主机 TCP/25。
-- `leaperone` 用户可使用 Docker、`flock`，并已登录香港 ACR。
+- `leaperone` 用户可使用 Docker、`flock`，并已登录当前选定的发布 registry。
 - 首次自动发布前手工创建目标目录及 `.env`、`.env.worker`；工作流永远不会
   创建、传输或覆盖运行时秘密。
 - 部署串行锁位于目标目录的 `.deploy.lock`，不要求发布账号写入 `/run/lock`。
@@ -63,7 +66,7 @@ RepoDigest 和部署标签验证。失败时 `deploy.sh` 恢复旧 `.env` 并重
 
 ```dotenv
 DEPLOY_ENV=production
-REGISTRY_HOST=registry.cn-hongkong.aliyuncs.com
+REGISTRY_HOST=<REGISTRY_HOST>
 EMAIL_WORKER_IMAGE_TAG=email-worker-<40位源码SHA>
 EMAIL_WORKER_IMAGE_DIGEST=sha256:<64位digest>
 EMAIL_WORKER_SOURCE_SHA=<40位源码SHA>
@@ -112,7 +115,7 @@ docker compose logs --tail 100 email-worker
 netstat -ltn | grep -E '(^|[.:])25[[:space:]]'
 ```
 
-随后必须从另一台公网主机确认 `8.217.72.118:25` 返回 `220` SMTP banner，覆盖
+随后必须从另一台公网主机确认 `<DEPLOY_HOST>:25` 返回 `220` SMTP banner，覆盖
 云防火墙和运营商链路。Docker 日志按单文件 10 MiB、3 个文件轮转。
 
 ## 手工回退
@@ -122,8 +125,11 @@ source SHA、manifest digest、release tag 和 releases SHA，再调用：
 
 ```bash
 cd /home/leaperone/services/leaperone-email-worker
-./deploy.sh <source-sha> <sha256:digest> <email-worker-vX.Y.Z> <releases-sha>
+./deploy.sh <source-sha> <sha256:digest> <email-worker-vX.Y.Z> <releases-sha> [registry-host]
 ```
+
+省略 `registry-host` 时沿用 `.env` 中的 `REGISTRY_HOST`；回退到另一 registry 上的
+旧 digest 时必须显式传入该 registry。
 
 不要部署 `email-worker-latest` 或仅版本标签，不要使用 `--build`，也不要在香港
 主机修改源码。

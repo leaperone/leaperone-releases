@@ -15,6 +15,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      TARGET_REGISTRY_HOST: ${{ secrets.DE_REGISTRY_HOST || 'registry.cn-hongkong.aliyuncs.com' }}
     outputs:
       pr_number: ${{ steps.set-ref.outputs.pr_number }}
       is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
@@ -138,27 +140,49 @@ jobs:
       - name: Build API image
         run: docker compose -f ./docker/docker-compose-build.yml build leaperone-api
 
-      - name: Login to Aliyun Docker Registry
+      - name: Validate overseas registry configuration
+        if: steps.set-ref.outputs.is_deployable == 'true'
+        env:
+          DE_REGISTRY_HOST: ${{ secrets.DE_REGISTRY_HOST }}
+          DE_REGISTRY_USERNAME: ${{ secrets.DE_REGISTRY_USERNAME }}
+          DE_REGISTRY_PASSWORD: ${{ secrets.DE_REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$DE_REGISTRY_HOST" ] || exit 0
+          if ! [[ "$DE_REGISTRY_HOST" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$ ]] \
+            || [[ "$DE_REGISTRY_HOST" =~ ^[0-9.]+$ ]]; then
+            echo "ERROR: DE_REGISTRY_HOST must be a lowercase registry host with optional port and no scheme or path" >&2
+            exit 1
+          fi
+          case "registry.cn-hongkong.aliyuncs.com" in
+            *"$DE_REGISTRY_HOST"*) echo "ERROR: leave DE_REGISTRY_HOST unset to use the default Aliyun registry" >&2; exit 1 ;;
+          esac
+          test -n "$DE_REGISTRY_USERNAME" || { echo "ERROR: DE_REGISTRY_USERNAME is required with DE_REGISTRY_HOST" >&2; exit 1; }
+          test -n "$DE_REGISTRY_PASSWORD" || { echo "ERROR: DE_REGISTRY_PASSWORD is required with DE_REGISTRY_HOST" >&2; exit 1; }
+
+      - name: Login to overseas Docker registry
         if: steps.set-ref.outputs.is_deployable == 'true'
         uses: docker/login-action@v3
         with:
-          registry: registry.cn-hongkong.aliyuncs.com
-          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
-          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+          registry: ${{ env.TARGET_REGISTRY_HOST }}
+          username: ${{ secrets.DE_REGISTRY_HOST && secrets.DE_REGISTRY_USERNAME || secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.DE_REGISTRY_HOST && secrets.DE_REGISTRY_PASSWORD || secrets.ALIYUN_DOCKER_PASSWORD }}
 
       - name: Push immutable and latest API image
         if: steps.set-ref.outputs.is_deployable == 'true'
         run: |
           set -euo pipefail
           SOURCE_SHA="${{ steps.source.outputs.sha }}"
-          REGISTRY_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone"
+          LOCAL_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:api-latest"
+          REGISTRY_IMAGE="${TARGET_REGISTRY_HOST}/leaperone/leaperone"
 
           if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "ERROR: expected a full Git source SHA, got: $SOURCE_SHA" >&2
             exit 1
           fi
 
-          docker tag "${REGISTRY_IMAGE}:api-latest" "${REGISTRY_IMAGE}:api-${SOURCE_SHA}"
+          docker tag "$LOCAL_IMAGE" "${REGISTRY_IMAGE}:api-latest"
+          docker tag "$LOCAL_IMAGE" "${REGISTRY_IMAGE}:api-${SOURCE_SHA}"
 
           # Immutable tags are the deployment source of truth. Keep latest for
           # humans and legacy consumers, but never deploy from it here.

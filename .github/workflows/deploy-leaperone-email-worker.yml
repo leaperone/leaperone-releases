@@ -28,10 +28,12 @@ jobs:
   build-and-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      TARGET_REGISTRY_HOST: ${{ secrets.DE_REGISTRY_HOST || 'registry.cn-hongkong.aliyuncs.com' }}
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
       release_tag: ${{ steps.request.outputs.tag }}
-      image_ref: ${{ steps.image.outputs.ref }}
+      image_name: ${{ steps.image.outputs.name }}
       image_digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Validate production release request
@@ -136,20 +138,37 @@ jobs:
           deno task check
           deno task test
 
-      - name: Validate registry credentials
+      - name: Validate registry configuration and credentials
         env:
-          REGISTRY_USERNAME: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
-          REGISTRY_PASSWORD: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+          DE_REGISTRY_HOST: ${{ secrets.DE_REGISTRY_HOST }}
+          DE_REGISTRY_USERNAME: ${{ secrets.DE_REGISTRY_USERNAME }}
+          DE_REGISTRY_PASSWORD: ${{ secrets.DE_REGISTRY_PASSWORD }}
+          ALIYUN_DOCKER_USERNAME: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          ALIYUN_DOCKER_PASSWORD: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
         run: |
-          test -n "$REGISTRY_USERNAME" || { echo "ERROR: ALIYUN_DOCKER_USERNAME is required" >&2; exit 1; }
-          test -n "$REGISTRY_PASSWORD" || { echo "ERROR: ALIYUN_DOCKER_PASSWORD is required" >&2; exit 1; }
+          set -euo pipefail
+          if [ -z "$DE_REGISTRY_HOST" ]; then
+            test -n "$ALIYUN_DOCKER_USERNAME" || { echo "ERROR: ALIYUN_DOCKER_USERNAME is required" >&2; exit 1; }
+            test -n "$ALIYUN_DOCKER_PASSWORD" || { echo "ERROR: ALIYUN_DOCKER_PASSWORD is required" >&2; exit 1; }
+          else
+            if ! [[ "$DE_REGISTRY_HOST" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$ ]] \
+              || [[ "$DE_REGISTRY_HOST" =~ ^[0-9.]+$ ]]; then
+              echo "ERROR: DE_REGISTRY_HOST must be a lowercase registry host with optional port and no scheme or path" >&2
+              exit 1
+            fi
+            case "registry.cn-hongkong.aliyuncs.com" in
+              *"$DE_REGISTRY_HOST"*) echo "ERROR: leave DE_REGISTRY_HOST unset to use the default Aliyun registry" >&2; exit 1 ;;
+            esac
+            test -n "$DE_REGISTRY_USERNAME" || { echo "ERROR: DE_REGISTRY_USERNAME is required with DE_REGISTRY_HOST" >&2; exit 1; }
+            test -n "$DE_REGISTRY_PASSWORD" || { echo "ERROR: DE_REGISTRY_PASSWORD is required with DE_REGISTRY_HOST" >&2; exit 1; }
+          fi
 
-      - name: Login to Aliyun Hong Kong ACR
+      - name: Login to release registry
         uses: docker/login-action@v3
         with:
-          registry: registry.cn-hongkong.aliyuncs.com
-          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
-          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+          registry: ${{ env.TARGET_REGISTRY_HOST }}
+          username: ${{ secrets.DE_REGISTRY_HOST && secrets.DE_REGISTRY_USERNAME || secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.DE_REGISTRY_HOST && secrets.DE_REGISTRY_PASSWORD || secrets.ALIYUN_DOCKER_PASSWORD }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -166,9 +185,9 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:email-worker-${{ steps.source.outputs.sha }}
-            registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:${{ steps.request.outputs.tag }}
-            registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:email-worker-latest
+            ${{ env.TARGET_REGISTRY_HOST }}/leaperone/leaperone:email-worker-${{ steps.source.outputs.sha }}
+            ${{ env.TARGET_REGISTRY_HOST }}/leaperone/leaperone:${{ steps.request.outputs.tag }}
+            ${{ env.TARGET_REGISTRY_HOST }}/leaperone/leaperone:email-worker-latest
           labels: |
             org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
             org.opencontainers.image.version=${{ steps.source.outputs.version }}
@@ -189,14 +208,16 @@ jobs:
             echo "ERROR: Buildx did not return a valid image digest" >&2
             exit 1
           }
-          IMAGE_REF="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:email-worker-${SOURCE_SHA}"
-          docker buildx imagetools inspect "${IMAGE_REF}@${IMAGE_DIGEST}" >/dev/null
-          echo "ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+          IMAGE_NAME="leaperone/leaperone:email-worker-${SOURCE_SHA}"
+          docker buildx imagetools inspect "${TARGET_REGISTRY_HOST}/${IMAGE_NAME}@${IMAGE_DIGEST}" >/dev/null
+          echo "name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
 
   deploy-hk:
     needs: build-and-publish
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      TARGET_REGISTRY_HOST: ${{ secrets.DE_REGISTRY_HOST || 'registry.cn-hongkong.aliyuncs.com' }}
     steps:
       - name: Checkout triggering releases snapshot
         uses: actions/checkout@v4
@@ -245,13 +266,14 @@ jobs:
           IMAGE_DIGEST: ${{ needs.build-and-publish.outputs.image_digest }}
           RELEASE_TAG: ${{ needs.build-and-publish.outputs.release_tag }}
           RELEASES_SHA: ${{ steps.release.outputs.sha }}
+          REGISTRY_HOST: ${{ env.TARGET_REGISTRY_HOST }}
         with:
           host: ${{ secrets.ALIYUN_HK_HOST }}
           username: ${{ secrets.ALIYUN_CN_USERNAME }}
           port: ${{ secrets.ALIYUN_CN_PORT }}
           key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
           command_timeout: 10m
-          envs: SOURCE_SHA,IMAGE_DIGEST,RELEASE_TAG,RELEASES_SHA
+          envs: SOURCE_SHA,IMAGE_DIGEST,RELEASE_TAG,RELEASES_SHA,REGISTRY_HOST
           script_stop: true
           script: |
             bash -se <<'BASH'
@@ -260,5 +282,5 @@ jobs:
             test -s "$APP_DIR/.env" || { echo "ERROR: $APP_DIR/.env must be provisioned first" >&2; exit 1; }
             test -s "$APP_DIR/.env.worker" || { echo "ERROR: $APP_DIR/.env.worker must be provisioned first" >&2; exit 1; }
             chmod 0700 "$APP_DIR/preflight.sh" "$APP_DIR/deploy.sh"
-            "$APP_DIR/deploy.sh" "$SOURCE_SHA" "$IMAGE_DIGEST" "$RELEASE_TAG" "$RELEASES_SHA"
+            "$APP_DIR/deploy.sh" "$SOURCE_SHA" "$IMAGE_DIGEST" "$RELEASE_TAG" "$RELEASES_SHA" "$REGISTRY_HOST"
             BASH

@@ -9,6 +9,9 @@ and operational records do not belong in this repository.
 
 See `AGENTS.md` before making changes.
 
+Overseas LEAPERone and MultiPost releases publish to a configurable registry;
+see `docs/overseas-registry.md`.
+
 application repository calls a pinned commit of these reusable workflows.
 Execution, credentials, logs, and artifacts belong to the private caller.
 CLI automation remains in the application repository.

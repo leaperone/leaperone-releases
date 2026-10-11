@@ -15,7 +15,13 @@ RELEASES_SHA="${RELEASES_SHA:?RELEASES_SHA is required}"
 [[ "$WWW_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "ERROR: invalid WWW digest" >&2; exit 1; }
 [[ "$DASHBOARD_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "ERROR: invalid Dashboard digest" >&2; exit 1; }
 
-REGISTRY_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone"
+REGISTRY_HOST="${REGISTRY_HOST:-registry.cn-hongkong.aliyuncs.com}"
+if ! [[ "$REGISTRY_HOST" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$ ]] \
+  || [[ "$REGISTRY_HOST" =~ ^[0-9.]+$ ]]; then
+  echo "ERROR: REGISTRY_HOST must be a lowercase registry host with optional port and no scheme or path" >&2
+  exit 1
+fi
+REGISTRY_IMAGE="${REGISTRY_HOST}/leaperone/leaperone"
 [ "$WWW_IMAGE_REF" = "${REGISTRY_IMAGE}:www-${SOURCE_SHA}" ] || {
   echo "ERROR: WWW image does not match the paired source SHA" >&2
   exit 1

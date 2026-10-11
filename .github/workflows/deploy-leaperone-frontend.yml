@@ -39,8 +39,11 @@ on:
         description: "Verified LEAPERone source SHA"
         value: ${{ jobs.build.outputs.source_sha }}
       image_ref:
-        description: "Published immutable image reference"
+        description: "Published immutable image reference (CN variant only)"
         value: ${{ jobs.build.outputs.image_ref }}
+      image_name:
+        description: "Published immutable image name relative to the selected registry host"
+        value: ${{ jobs.build.outputs.image_name }}
       image_digest:
         description: "Published registry manifest digest"
         value: ${{ jobs.build.outputs.image_digest }}
@@ -51,9 +54,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      TARGET_REGISTRY_HOST: ${{ inputs.site_variant == 'cn' && 'registry.cn-hongkong.aliyuncs.com' || secrets.DE_REGISTRY_HOST || 'registry.cn-hongkong.aliyuncs.com' }}
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
       image_ref: ${{ steps.publish.outputs.image_ref }}
+      image_name: ${{ steps.publish.outputs.image_name }}
       image_digest: ${{ steps.publish.outputs.image_digest }}
       sourcemap_bundle_key: ${{ steps.sourcemaps.outputs.bundle_key }}
     steps:
@@ -356,12 +362,32 @@ jobs:
           NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE: ${{ steps.build-secret.outputs.actions_path }}
         run: rm -f "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY_FILE"
 
-      - name: Login to Aliyun Docker Registry
+      - name: Validate overseas registry configuration
+        if: inputs.site_variant == 'global'
+        env:
+          DE_REGISTRY_HOST: ${{ secrets.DE_REGISTRY_HOST }}
+          DE_REGISTRY_USERNAME: ${{ secrets.DE_REGISTRY_USERNAME }}
+          DE_REGISTRY_PASSWORD: ${{ secrets.DE_REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$DE_REGISTRY_HOST" ] || exit 0
+          if ! [[ "$DE_REGISTRY_HOST" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$ ]] \
+            || [[ "$DE_REGISTRY_HOST" =~ ^[0-9.]+$ ]]; then
+            echo "ERROR: DE_REGISTRY_HOST must be a lowercase registry host with optional port and no scheme or path" >&2
+            exit 1
+          fi
+          case "registry.cn-hongkong.aliyuncs.com" in
+            *"$DE_REGISTRY_HOST"*) echo "ERROR: leave DE_REGISTRY_HOST unset to use the default Aliyun registry" >&2; exit 1 ;;
+          esac
+          test -n "$DE_REGISTRY_USERNAME" || { echo "ERROR: DE_REGISTRY_USERNAME is required with DE_REGISTRY_HOST" >&2; exit 1; }
+          test -n "$DE_REGISTRY_PASSWORD" || { echo "ERROR: DE_REGISTRY_PASSWORD is required with DE_REGISTRY_HOST" >&2; exit 1; }
+
+      - name: Login to release Docker registry
         uses: docker/login-action@v3
         with:
-          registry: registry.cn-hongkong.aliyuncs.com
-          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
-          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+          registry: ${{ env.TARGET_REGISTRY_HOST }}
+          username: ${{ inputs.site_variant == 'global' && secrets.DE_REGISTRY_HOST && secrets.DE_REGISTRY_USERNAME || secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ inputs.site_variant == 'global' && secrets.DE_REGISTRY_HOST && secrets.DE_REGISTRY_PASSWORD || secrets.ALIYUN_DOCKER_PASSWORD }}
 
       - name: Push immutable frontend image
         id: publish
@@ -371,14 +397,14 @@ jobs:
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
           set -euo pipefail
-          REGISTRY_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone"
-          LOCAL_IMAGE="${REGISTRY_IMAGE}:${COMPONENT}-latest"
+          LOCAL_IMAGE="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:${COMPONENT}-latest"
           if [ "$SITE_VARIANT" = cn ]; then
             TAG_COMPONENT="${COMPONENT}-cn"
           else
             TAG_COMPONENT="$COMPONENT"
           fi
-          IMMUTABLE_IMAGE="${REGISTRY_IMAGE}:${TAG_COMPONENT}-${SOURCE_SHA}"
+          IMAGE_NAME="leaperone/leaperone:${TAG_COMPONENT}-${SOURCE_SHA}"
+          IMMUTABLE_IMAGE="${TARGET_REGISTRY_HOST}/${IMAGE_NAME}"
 
           if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "ERROR: refusing to publish a mutable or malformed image tag" >&2
@@ -394,7 +420,11 @@ jobs:
             exit 1
           fi
 
-          echo "image_ref=$IMMUTABLE_IMAGE" >> "$GITHUB_OUTPUT"
+          # A secret registry host would make GitHub drop job outputs that contain it.
+          if [ "$SITE_VARIANT" = cn ]; then
+            echo "image_ref=$IMMUTABLE_IMAGE" >> "$GITHUB_OUTPUT"
+          fi
+          echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
           echo "image_digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
 
   upload-sourcemaps:
@@ -425,7 +455,7 @@ jobs:
       project: ${{ inputs.project }}
       env: production
       image_source_sha: ${{ needs.build.outputs.source_sha }}
-      image_ref: ${{ needs.build.outputs.image_ref }}
+      image_name: ${{ needs.build.outputs.image_name }}
       image_digest: ${{ needs.build.outputs.image_digest }}
     secrets: inherit
 

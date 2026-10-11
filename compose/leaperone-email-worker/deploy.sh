@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SOURCE_SHA="${1:?Usage: deploy.sh <source-sha> <image-digest> <release-tag> <releases-sha>}"
-IMAGE_DIGEST="${2:?Usage: deploy.sh <source-sha> <image-digest> <release-tag> <releases-sha>}"
-RELEASE_TAG="${3:?Usage: deploy.sh <source-sha> <image-digest> <release-tag> <releases-sha>}"
-RELEASES_SHA="${4:?Usage: deploy.sh <source-sha> <image-digest> <release-tag> <releases-sha>}"
+USAGE="Usage: deploy.sh <source-sha> <image-digest> <release-tag> <releases-sha> [registry-host]"
+SOURCE_SHA="${1:?$USAGE}"
+IMAGE_DIGEST="${2:?$USAGE}"
+RELEASE_TAG="${3:?$USAGE}"
+RELEASES_SHA="${4:?$USAGE}"
+REGISTRY_HOST="${5:-}"
+REGISTRY_HOST_PATTERN='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$'
 
 APP_DIR=/home/leaperone/services/leaperone-email-worker
 ENV_FILE="$APP_DIR/.env"
@@ -46,12 +49,16 @@ upsert_env_value() {
   mv -f "$temporary" "$file"
 }
 
+valid_registry_host() {
+  [[ "$1" =~ $REGISTRY_HOST_PATTERN ]] && ! [[ "$1" =~ ^[0-9.]+$ ]]
+}
+
 verify_deployment() {
-  local source_sha="$1" image_digest="$2" release_tag="$3" releases_sha="$4"
+  local source_sha="$1" image_digest="$2" release_tag="$3" releases_sha="$4" registry_host="$5"
   local container_image_id expected_repo_digest
   [ "$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER_NAME")" = healthy ] || return 1
   container_image_id="$(docker inspect --format '{{.Image}}' "$CONTAINER_NAME")"
-  expected_repo_digest="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone@${image_digest}"
+  expected_repo_digest="${registry_host}/leaperone/leaperone@${image_digest}"
   docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$container_image_id" \
     | grep -Fxq "$expected_repo_digest" || return 1
   [ "$(docker inspect --format '{{index .Config.Labels "com.leaperone.component"}}' "$CONTAINER_NAME")" = email-worker ] || return 1
@@ -86,6 +93,9 @@ restore_previous_env() {
   fail "invalid email-worker release tag"
 [[ "$RELEASES_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "invalid releases repository SHA"
 [ -s "$ENV_FILE" ] || fail "$ENV_FILE is missing or empty"
+[ -n "$REGISTRY_HOST" ] || REGISTRY_HOST="$(read_env_value "$ENV_FILE" REGISTRY_HOST)"
+valid_registry_host "$REGISTRY_HOST" || \
+  fail "registry host must be a lowercase registry host with optional port and no scheme or path"
 [ -s "$APP_DIR/.env.worker" ] || fail "$APP_DIR/.env.worker is missing or empty"
 [ -x "$PREFLIGHT" ] || fail "$PREFLIGHT is missing or not executable"
 
@@ -102,6 +112,7 @@ previous_digest="$(read_env_value "$ENV_FILE" EMAIL_WORKER_IMAGE_DIGEST)"
 previous_source_sha="$(read_env_value "$ENV_FILE" EMAIL_WORKER_SOURCE_SHA)"
 previous_release_tag="$(read_env_value "$ENV_FILE" EMAIL_WORKER_RELEASE_TAG)"
 previous_releases_sha="$(read_env_value "$ENV_FILE" RELEASES_SHA)"
+previous_registry_host="$(read_env_value "$ENV_FILE" REGISTRY_HOST)"
 initial_container_id="$(docker inspect --format '{{.Id}}' "$CONTAINER_NAME" 2>/dev/null || true)"
 
 rollback_available=false
@@ -110,17 +121,19 @@ if [[ "$previous_tag" =~ ^email-worker-[0-9a-f]{40}$ ]] &&
    [[ "$previous_source_sha" =~ ^[0-9a-f]{40}$ ]] &&
    [ "$previous_tag" = "email-worker-$previous_source_sha" ] &&
    [[ "$previous_release_tag" =~ ^email-worker-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] &&
-   [[ "$previous_releases_sha" =~ ^[0-9a-f]{40}$ ]]; then
+   [[ "$previous_releases_sha" =~ ^[0-9a-f]{40}$ ]] &&
+   valid_registry_host "$previous_registry_host"; then
   rollback_available=true
 fi
 
+upsert_env_value "$ENV_FILE" REGISTRY_HOST "$REGISTRY_HOST"
 upsert_env_value "$ENV_FILE" EMAIL_WORKER_IMAGE_TAG "email-worker-$SOURCE_SHA"
 upsert_env_value "$ENV_FILE" EMAIL_WORKER_IMAGE_DIGEST "$IMAGE_DIGEST"
 upsert_env_value "$ENV_FILE" EMAIL_WORKER_SOURCE_SHA "$SOURCE_SHA"
 upsert_env_value "$ENV_FILE" EMAIL_WORKER_RELEASE_TAG "$RELEASE_TAG"
 upsert_env_value "$ENV_FILE" RELEASES_SHA "$RELEASES_SHA"
 
-if deploy_current_env && verify_deployment "$SOURCE_SHA" "$IMAGE_DIGEST" "$RELEASE_TAG" "$RELEASES_SHA"; then
+if deploy_current_env && verify_deployment "$SOURCE_SHA" "$IMAGE_DIGEST" "$RELEASE_TAG" "$RELEASES_SHA" "$REGISTRY_HOST"; then
   printf 'Email Worker deploy complete: %s (%s)\n' "$RELEASE_TAG" "$SOURCE_SHA"
   docker compose ps
   exit 0
@@ -131,7 +144,8 @@ cp -p "$backup" "$ENV_FILE"
 
 if [ "$rollback_available" = true ]; then
   if restore_previous_env && verify_deployment \
-    "$previous_source_sha" "$previous_digest" "$previous_release_tag" "$previous_releases_sha"; then
+    "$previous_source_sha" "$previous_digest" "$previous_release_tag" "$previous_releases_sha" \
+    "$previous_registry_host"; then
     echo "Automatic rollback succeeded: $previous_release_tag ($previous_source_sha)" >&2
     exit 1
   fi

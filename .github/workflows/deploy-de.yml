@@ -21,11 +21,11 @@ on:
         type: string
         default: ""
         description: "Optional full source SHA used for project-specific immutable image tags"
-      image_ref:
+      image_name:
         required: false
         type: string
         default: ""
-        description: "Expected immutable registry image reference for deployment verification"
+        description: "Expected immutable image name relative to the selected registry host, for deployment verification"
       image_digest:
         required: false
         type: string
@@ -42,6 +42,8 @@ jobs:
     concurrency:
       group: deploy-de-${{ inputs.project }}-${{ inputs.env }}
       cancel-in-progress: false
+    env:
+      TARGET_REGISTRY_HOST: ${{ secrets.DE_REGISTRY_HOST || 'registry.cn-hongkong.aliyuncs.com' }}
     steps:
       - name: Checkout deployment configs
         uses: actions/checkout@v6
@@ -67,6 +69,11 @@ jobs:
             active|cold) ;;
             *) echo "ERROR: deployment_mode must be active or cold" >&2; exit 1 ;;
           esac
+          if ! [[ "$TARGET_REGISTRY_HOST" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$ ]] \
+            || [[ "$TARGET_REGISTRY_HOST" =~ ^[0-9.]+$ ]]; then
+            echo "ERROR: DE_REGISTRY_HOST must be a lowercase registry host with optional port and no scheme or path" >&2
+            exit 1
+          fi
 
       - name: Sync compose directory to server
         uses: appleboy/scp-action@v0.1.7
@@ -97,10 +104,11 @@ jobs:
         env:
           DEPLOY_COMPONENTS: ${{ inputs.components }}
           IMAGE_SOURCE_SHA: ${{ inputs.image_source_sha }}
-          IMAGE_REF: ${{ inputs.image_ref }}
+          IMAGE_NAME: ${{ inputs.image_name }}
           IMAGE_DIGEST: ${{ inputs.image_digest }}
           DEPLOYMENT_MODE: ${{ inputs.deployment_mode }}
           RELEASES_SHA: ${{ github.sha }}
+          REGISTRY_HOST: ${{ env.TARGET_REGISTRY_HOST }}
           APP_DEPLOY_ROOT: ${{ secrets.APP_DEPLOY_ROOT }}
           DEPLOY_STATE_ROOT: ${{ secrets.DEPLOY_STATE_ROOT }}
           ALIPAY_CERT_HOST_DIR: ${{ secrets.ALIPAY_CERT_HOST_DIR }}
@@ -110,22 +118,25 @@ jobs:
           key: ${{ secrets.DE_APP_SSH_KEY }}
           port: ${{ vars.DE_APP_PORT || '22' }}
           command_timeout: 20m
-          envs: DEPLOY_COMPONENTS,IMAGE_SOURCE_SHA,IMAGE_REF,IMAGE_DIGEST,DEPLOYMENT_MODE,RELEASES_SHA,APP_DEPLOY_ROOT,DEPLOY_STATE_ROOT,ALIPAY_CERT_HOST_DIR
+          envs: DEPLOY_COMPONENTS,IMAGE_SOURCE_SHA,IMAGE_NAME,IMAGE_DIGEST,DEPLOYMENT_MODE,RELEASES_SHA,REGISTRY_HOST,APP_DEPLOY_ROOT,DEPLOY_STATE_ROOT,ALIPAY_CERT_HOST_DIR
           script: |
             set -euo pipefail
             : "${APP_DEPLOY_ROOT:?missing APP_DEPLOY_ROOT secret}"
             : "${DEPLOY_STATE_ROOT:?missing DEPLOY_STATE_ROOT secret}"
+            : "${REGISTRY_HOST:?missing registry host}"
+            export REGISTRY_HOST
             APP_DIR="${APP_DEPLOY_ROOT}/${{ inputs.project }}/${{ inputs.env }}"
             TOOL_DIR="${APP_DIR}/.release-tools/${{ github.run_id }}-${{ github.run_attempt }}"
             trap 'rm -rf "$TOOL_DIR"' EXIT
             IMAGE_SOURCE_SHA="${IMAGE_SOURCE_SHA:-}"
-            IMAGE_REF="${IMAGE_REF:-}"
+            IMAGE_NAME="${IMAGE_NAME:-}"
+            IMAGE_REF=""
             IMAGE_DIGEST="${IMAGE_DIGEST:-}"
             DEPLOYMENT_MODE="${DEPLOYMENT_MODE:-active}"
             RELEASES_SHA="${RELEASES_SHA:-}"
             COMPONENT=""
             CONTAINER_NAME=""
-            EXPECTED_IMAGE_REF=""
+            EXPECTED_IMAGE_NAME=""
             EXPECTED_REPO_DIGEST=""
 
             case "$DEPLOYMENT_MODE" in
@@ -156,22 +167,22 @@ jobs:
               leaperone-www)
                 COMPONENT="www"
                 CONTAINER_NAME="leaperone-www-production"
-                EXPECTED_IMAGE_REF="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:www-${IMAGE_SOURCE_SHA}"
+                EXPECTED_IMAGE_NAME="leaperone/leaperone:www-${IMAGE_SOURCE_SHA}"
                 export WWW_IMAGE_TAG="www-${IMAGE_SOURCE_SHA}"
                 export WWW_IMAGE_DIGEST="$IMAGE_DIGEST"
                 ;;
               leaperone-dashboard)
                 COMPONENT="dashboard"
                 CONTAINER_NAME="leaperone-dashboard-production"
-                EXPECTED_IMAGE_REF="registry.cn-hongkong.aliyuncs.com/leaperone/leaperone:dashboard-${IMAGE_SOURCE_SHA}"
+                EXPECTED_IMAGE_NAME="leaperone/leaperone:dashboard-${IMAGE_SOURCE_SHA}"
                 export DASHBOARD_IMAGE_TAG="dashboard-${IMAGE_SOURCE_SHA}"
                 export DASHBOARD_IMAGE_DIGEST="$IMAGE_DIGEST"
                 ;;
             esac
 
-            if [ -n "$EXPECTED_IMAGE_REF" ]; then
-              [ "$IMAGE_REF" = "$EXPECTED_IMAGE_REF" ] || {
-                echo "ERROR: unexpected immutable image ref: $IMAGE_REF" >&2
+            if [ -n "$EXPECTED_IMAGE_NAME" ]; then
+              [ "$IMAGE_NAME" = "$EXPECTED_IMAGE_NAME" ] || {
+                echo "ERROR: unexpected immutable image name: $IMAGE_NAME" >&2
                 exit 1
               }
               [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
@@ -182,6 +193,7 @@ jobs:
                 echo "ERROR: invalid releases repository SHA" >&2
                 exit 1
               }
+              IMAGE_REF="${REGISTRY_HOST}/${IMAGE_NAME}"
               IMAGE_REPOSITORY="${IMAGE_REF%:*}"
               EXPECTED_REPO_DIGEST="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
               export IMAGE_REF IMAGE_DIGEST IMAGE_SOURCE_SHA
