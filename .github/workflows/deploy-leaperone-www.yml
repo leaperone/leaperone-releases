@@ -24,6 +24,8 @@ jobs:
 
   deploy-cn:
     needs: deploy
+    # global_only=true releases leaper.one and leaves leaperone.cn on its current image.
+    if: ${{ !(github.event.client_payload.global_only == true || github.event.client_payload.global_only == 'true') }}
     uses: ./.github/workflows/deploy-leaperone-frontend.yml
     with:
       component: www
