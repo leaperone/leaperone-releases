@@ -1,39 +1,12 @@
-# Public repository safety rules
+# Public release automation
 
-This is a public release-automation repository. Treat every committed byte,
-branch, pull request, workflow log, artifact, and Git object as public.
+Treat committed files, branches, pull requests, workflows, logs and artifacts as public.
 
-## Repository administration
-
-- Do not change repository visibility, repository settings, branch protection,
-  runner registration, or Git history unless the user explicitly requests that
-  exact administrative operation.
-- Do not make this repository private as an implementation detail.
-- Production jobs must use GitHub-hosted runners except for the authorized
-
-## Information handling
-
-- Never commit real server hostnames, IP addresses, SSH usernames, ports,
-  filesystem layouts, inventories, network topology, credentials, tokens,
-  database locations, backup locations, or operational evidence.
-- Documentation and examples must use obvious placeholders such as
-  `<DEPLOY_HOST>`, `<PORT>`, and `<REMOTE_PATH>`.
-- Runtime infrastructure values must come from GitHub Secrets. Do not print
-  their resolved values in workflow logs.
-- Do not add an `ops/` directory, infrastructure runbooks, migration journals,
-  cutover records, or server-specific README content.
-- Before committing, scan all changed files and generated output for
-  infrastructure identifiers and redact them.
-
-## Product boundary
-
-  and their deployment/runtime details belong only in their private repositories. Do not add their workflows, compose manifests,
-  documentation, secrets, artifacts, or source references here.
-- Keep changes limited to public release automation. If a task needs private
-  infrastructure context, stop and move that work to the appropriate private
-  repository.
-
-
-- The caller supplies runner labels, registry and endpoint configuration, and
-  deployment secrets. Do not commit their infrastructure values here.
-- Runs, source checkout, logs, image metadata, and deployment payloads stay in
+- Keep existing public release automation functional. New private product automation belongs in the owning private repository.
+- Production jobs use GitHub-hosted runners. Existing telemetry upload jobs may use the approved PVE runner.
+- Read repository and runtime state before making changes. Preserve unrelated work.
+- Infrastructure values and credentials come from GitHub Secrets. Never commit server identifiers, paths, inventories, network topology or operational evidence.
+- Documentation uses placeholders such as <DEPLOY_HOST>, <PORT> and <REMOTE_PATH>.
+- Do not add ops directories, cutover records, private source or deployment logs.
+- Do not change visibility, ownership, branch protection or history without explicit user authorization.
+- After an authorized history rewrite, refresh the checkout before new work so old Git objects are not reintroduced.
