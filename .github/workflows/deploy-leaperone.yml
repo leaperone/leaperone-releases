@@ -22,6 +22,8 @@ jobs:
       is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
       components: ${{ steps.set-ref.outputs.components }}
       source_sha: ${{ steps.source.outputs.sha }}
+      image_name: ${{ steps.publish.outputs.image_name }}
+      image_digest: ${{ steps.publish.outputs.image_digest }}
 
     steps:
       - name: Validate and set ref
@@ -169,6 +171,7 @@ jobs:
           password: ${{ secrets.DE_REGISTRY_HOST && secrets.DE_REGISTRY_PASSWORD || secrets.ALIYUN_DOCKER_PASSWORD }}
 
       - name: Push immutable and latest API image
+        id: publish
         if: steps.set-ref.outputs.is_deployable == 'true'
         run: |
           set -euo pipefail
@@ -184,10 +187,20 @@ jobs:
           docker tag "$LOCAL_IMAGE" "${REGISTRY_IMAGE}:api-latest"
           docker tag "$LOCAL_IMAGE" "${REGISTRY_IMAGE}:api-${SOURCE_SHA}"
 
-          # Immutable tags are the deployment source of truth. Keep latest for
-          # humans and legacy consumers, but never deploy from it here.
-          docker push "${REGISTRY_IMAGE}:api-${SOURCE_SHA}"
+          # The immutable tag pinned to its manifest digest is the deployment
+          # source of truth. Keep latest for humans, but never deploy from it.
+          PUSH_OUTPUT="$(docker push "${REGISTRY_IMAGE}:api-${SOURCE_SHA}" 2>&1)"
+          printf '%s\n' "$PUSH_OUTPUT"
+          IMAGE_DIGEST="$(printf '%s\n' "$PUSH_OUTPUT" | sed -nE 's/^.*digest: (sha256:[0-9a-f]{64}).*$/\1/p' | tail -n 1)"
+          if ! [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "ERROR: registry push did not return a valid manifest digest" >&2
+            exit 1
+          fi
           docker push "${REGISTRY_IMAGE}:api-latest"
+
+          # A secret registry host would make GitHub drop job outputs that contain it.
+          echo "image_name=leaperone/leaperone:api-${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
+          echo "image_digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node.js
         if: steps.set-ref.outputs.is_deployable == 'true'
@@ -244,4 +257,6 @@ jobs:
       project: leaperone
       env: production
       image_source_sha: ${{ needs.build.outputs.source_sha }}
+      image_name: ${{ needs.build.outputs.image_name }}
+      image_digest: ${{ needs.build.outputs.image_digest }}
     secrets: inherit

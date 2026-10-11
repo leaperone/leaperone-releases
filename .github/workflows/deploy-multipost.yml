@@ -115,6 +115,7 @@ jobs:
     outputs:
       app_sha: ${{ steps.app-sha.outputs.sha }}
       sourcemap_bundle_key: ${{ steps.stage-sourcemaps.outputs.bundle_key }}
+      component_digests: ${{ steps.push.outputs.component_digests }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -277,31 +278,46 @@ jobs:
           password: ${{ secrets.DE_REGISTRY_HOST && secrets.DE_REGISTRY_PASSWORD || secrets.ALIYUN_DOCKER_PASSWORD }}
 
       - name: Push Docker images to overseas registry
+        id: push
         run: |
           set -euo pipefail
           LOCAL_REPOSITORY="registry.cn-hongkong.aliyuncs.com/leaperone/multipost"
           TARGET_REPOSITORY="${TARGET_REGISTRY_HOST}/leaperone/multipost"
+          COMPONENT_DIGESTS=""
 
+          # The latest tags stay for discovery; deployment pins the pushed digest.
           push_image() {
-            local tag="$1"
+            local component="$1"
+            local tag="$2"
+            local push_output
+            local digest
             docker tag "$LOCAL_REPOSITORY:$tag" "$TARGET_REPOSITORY:$tag"
-            docker push "$TARGET_REPOSITORY:$tag"
+            push_output="$(docker push "$TARGET_REPOSITORY:$tag" 2>&1)"
+            printf '%s\n' "$push_output"
+            digest="$(printf '%s\n' "$push_output" | sed -nE 's/^.*digest: (sha256:[0-9a-f]{64}).*$/\1/p' | tail -n 1)"
+            if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "ERROR: registry push for $component did not return a valid manifest digest" >&2
+              exit 1
+            fi
+            COMPONENT_DIGESTS="${COMPONENT_DIGESTS:+$COMPONENT_DIGESTS,}${component}=${digest}"
           }
 
           if [ "${{ needs.resolve-context.outputs.build_web }}" = "true" ]; then
             echo "Pushing web image..."
-            push_image "latest"
+            push_image web "latest"
           fi
 
           if [ "${{ needs.resolve-context.outputs.build_backend }}" = "true" ]; then
             echo "Pushing backend image..."
-            push_image "backend-latest"
+            push_image backend "backend-latest"
           fi
 
           if [ "${{ needs.resolve-context.outputs.build_video_stt }}" = "true" ]; then
             echo "Pushing video-stt-worker image..."
-            push_image "video-stt-worker-latest"
+            push_image video-stt-worker "video-stt-worker-latest"
           fi
+
+          echo "component_digests=$COMPONENT_DIGESTS" >> "$GITHUB_OUTPUT"
 
   upload-sourcemaps:
     needs: [resolve-context, build-and-push]
@@ -382,11 +398,12 @@ jobs:
           atlas migrate apply --env production --config file://db/atlas/atlas.hcl
 
   deploy-de:
-    needs: [resolve-context, migrate-production]
+    needs: [resolve-context, build-and-push, migrate-production]
     if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_de == 'true'
     uses: ./.github/workflows/deploy-de.yml
     with:
       project: multipost
       env: production
       components: ${{ needs.resolve-context.outputs.components }}
+      component_digests: ${{ needs.build-and-push.outputs.component_digests }}
     secrets: inherit
