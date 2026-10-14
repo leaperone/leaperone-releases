@@ -243,11 +243,18 @@ jobs:
             -L 15432:127.0.0.1:5432 \
             "$DE_APP_USERNAME@$DE_APP_HOST"
 
-      - name: Run Database Migrations
+      - name: Run LEAPERone Atlas migrations
         if: steps.set-ref.outputs.is_deployable == 'true'
+        env:
+          LEAPERONE_DE_DATABASE_URL: ${{ secrets.LEAPERONE_DE_DATABASE_URL }}
         run: |
-          pnpm install --filter @leaperone/db
-          DATABASE_URL="${{ secrets.LEAPERONE_DE_DATABASE_URL }}" pnpm --filter @leaperone/db db:migrate
+          set -euo pipefail
+          test -n "$LEAPERONE_DE_DATABASE_URL"
+          docker run --rm --network host \
+            -v "$GITHUB_WORKSPACE/packages/db/atlas:/atlas:ro" \
+            -e DATABASE_URL="$LEAPERONE_DE_DATABASE_URL" \
+            arigaio/atlas:1.2.3-community \
+            migrate apply --dir file:///atlas/migrations --url "$LEAPERONE_DE_DATABASE_URL"
 
   deploy-de:
     needs: build
