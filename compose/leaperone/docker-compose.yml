@@ -19,7 +19,6 @@ services:
     environment:
       PORT: 9000
       DENO_ENV: production
-      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
       ENABLE_IMAGE_WORKER: ${ENABLE_IMAGE_WORKER:-true}
       ENABLE_EMAIL_LISTENER: ${ENABLE_EMAIL_LISTENER:-false}
       ENABLE_TEMP_IMAGE_SERVER: ${ENABLE_TEMP_IMAGE_SERVER:-true}
