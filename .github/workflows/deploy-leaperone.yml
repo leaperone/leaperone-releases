@@ -251,10 +251,10 @@ jobs:
           set -euo pipefail
           test -n "$LEAPERONE_DE_DATABASE_URL"
           docker run --rm --network host \
-            -v "$GITHUB_WORKSPACE/packages/db/atlas:/atlas:ro" \
+            -v "$GITHUB_WORKSPACE/packages/db/atlas:/schema:ro" \
             -e DATABASE_URL="$LEAPERONE_DE_DATABASE_URL" \
             arigaio/atlas:1.2.3-community \
-            migrate apply --dir file:///atlas/migrations --url "$LEAPERONE_DE_DATABASE_URL"
+            migrate apply --dir file:///schema/migrations --url "$LEAPERONE_DE_DATABASE_URL"
 
   deploy-de:
     needs: build
