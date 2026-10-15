@@ -253,7 +253,7 @@ jobs:
           docker run --rm --network host \
             -v "$GITHUB_WORKSPACE/packages/db/atlas:/schema:ro" \
             -e DATABASE_URL="$LEAPERONE_DE_DATABASE_URL" \
-            arigaio/atlas:1.2.3-community \
+            arigaio/atlas@sha256:d43f072e79dd98554b890fb56d159b14c0a4ccdb8609296da16402d015483cfa \
             migrate apply --dir file:///schema/migrations --url "$LEAPERONE_DE_DATABASE_URL"
 
   deploy-de:
