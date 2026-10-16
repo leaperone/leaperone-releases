@@ -250,11 +250,19 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$LEAPERONE_DE_DATABASE_URL"
+          ATLAS_DATABASE_URL="$LEAPERONE_DE_DATABASE_URL"
+          case "$ATLAS_DATABASE_URL" in
+            *\?*) ATLAS_DATABASE_URL="${ATLAS_DATABASE_URL}&search_path=public" ;;
+            *) ATLAS_DATABASE_URL="${ATLAS_DATABASE_URL}?search_path=public" ;;
+          esac
           docker run --rm --network host \
             -v "$GITHUB_WORKSPACE/packages/db/atlas:/schema:ro" \
-            -e DATABASE_URL="$LEAPERONE_DE_DATABASE_URL" \
             arigaio/atlas@sha256:d43f072e79dd98554b890fb56d159b14c0a4ccdb8609296da16402d015483cfa \
-            migrate apply --dir file:///schema/migrations --url "$LEAPERONE_DE_DATABASE_URL"
+            migrate apply --dir file:///schema/migrations --url "$ATLAS_DATABASE_URL"
+          docker run --rm --network host \
+            -v "$GITHUB_WORKSPACE/packages/db/atlas:/schema:ro" \
+            arigaio/atlas@sha256:d43f072e79dd98554b890fb56d159b14c0a4ccdb8609296da16402d015483cfa \
+            migrate status --dir file:///schema/migrations --url "$ATLAS_DATABASE_URL"
 
   deploy-de:
     needs: build
