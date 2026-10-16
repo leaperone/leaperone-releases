@@ -15,6 +15,11 @@ on:
       posthog_project_id:
         required: true
         type: string
+      allow_posthog_failure:
+        description: Report PostHog upload failures as warnings for optional telemetry uploads
+        required: false
+        type: boolean
+        default: false
       sentry_project:
         required: true
         type: string
@@ -99,6 +104,7 @@ jobs:
           POSTHOG_CLI_HOST: ${{ secrets.posthog_internal_url }}
           POSTHOG_RELEASE_NAME: ${{ inputs.posthog_release_name }}
           POSTHOG_RELEASE_VERSION: ${{ inputs.posthog_release_version }}
+          ALLOW_POSTHOG_FAILURE: ${{ inputs.allow_posthog_failure }}
           SENTRY_AUTH_TOKEN: ${{ secrets.sentry_auth_token }}
           SENTRY_URL: ${{ secrets.sentry_internal_url }}
           SENTRY_ORG: leaperone
@@ -119,7 +125,7 @@ jobs:
           posthog_log="$RUNNER_TEMP/posthog-sourcemaps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
           sentry_log="$RUNNER_TEMP/sentry-sourcemaps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
 
-          env RUST_LOG=error pnpm dlx @posthog/cli@0.8.4 sourcemap upload \
+          timeout --kill-after=10s 180s env RUST_LOG=error pnpm dlx @posthog/cli@0.8.4 sourcemap upload \
             --directory "$SOURCE_MAP_DIR" \
             --batch-size 10 \
             --concurrency 2 \
@@ -150,6 +156,9 @@ jobs:
             echo "::group::PostHog source map upload failure"
             tail -n 120 "$posthog_log" >&2 || true
             echo "::endgroup::"
+            if [ "$ALLOW_POSTHOG_FAILURE" = "true" ]; then
+              echo "::warning::PostHog source map upload failed (exit $posthog_status; timeout 180s). Deployment and Sentry checks remain required."
+            fi
           fi
 
           if [ "$sentry_status" -eq 0 ]; then
@@ -161,8 +170,8 @@ jobs:
           fi
 
           rm -f "$posthog_log" "$sentry_log"
-          if [ "$posthog_status" -ne 0 ] || [ "$sentry_status" -ne 0 ]; then
-            echo "ERROR: one or more source map uploads failed" >&2
+          if [ "$sentry_status" -ne 0 ] || { [ "$posthog_status" -ne 0 ] && [ "$ALLOW_POSTHOG_FAILURE" != "true" ]; }; then
+            echo "ERROR: a required source map upload failed" >&2
             exit 1
           fi
 

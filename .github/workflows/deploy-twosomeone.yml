@@ -633,6 +633,7 @@ jobs:
       posthog_release_name: 2SOMEone
       posthog_release_version: ${{ needs.prepare.outputs.app_sha }}
       posthog_project_id: ${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
+      allow_posthog_failure: ${{ needs.prepare.outputs.deploy_env == 'beta' }}
       sentry_project: 2someone-web
       sentry_release: 2someone-web@${{ needs.prepare.outputs.app_sha }}
     secrets:
