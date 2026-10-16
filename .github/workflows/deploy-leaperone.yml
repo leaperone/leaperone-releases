@@ -258,11 +258,11 @@ jobs:
           docker run --rm --network host \
             -v "$GITHUB_WORKSPACE/packages/db/atlas:/schema:ro" \
             arigaio/atlas@sha256:d43f072e79dd98554b890fb56d159b14c0a4ccdb8609296da16402d015483cfa \
-            migrate apply --dir file:///schema/migrations --url "$ATLAS_DATABASE_URL"
+            migrate apply --dir file:///schema/migrations --url "$ATLAS_DATABASE_URL" --revisions-schema atlas_schema_revisions
           docker run --rm --network host \
             -v "$GITHUB_WORKSPACE/packages/db/atlas:/schema:ro" \
             arigaio/atlas@sha256:d43f072e79dd98554b890fb56d159b14c0a4ccdb8609296da16402d015483cfa \
-            migrate status --dir file:///schema/migrations --url "$ATLAS_DATABASE_URL"
+            migrate status --dir file:///schema/migrations --url "$ATLAS_DATABASE_URL" --revisions-schema atlas_schema_revisions
 
   deploy-de:
     needs: build
