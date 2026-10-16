@@ -15,6 +15,18 @@ on:
       posthog_project_id:
         required: true
         type: string
+      posthog_source_repository:
+        required: false
+        type: string
+        default: ""
+      posthog_source_sha:
+        required: false
+        type: string
+        default: ""
+      posthog_source_ref:
+        required: false
+        type: string
+        default: ""
       sentry_project:
         required: true
         type: string
@@ -99,6 +111,9 @@ jobs:
           POSTHOG_CLI_HOST: ${{ secrets.posthog_internal_url }}
           POSTHOG_RELEASE_NAME: ${{ inputs.posthog_release_name }}
           POSTHOG_RELEASE_VERSION: ${{ inputs.posthog_release_version }}
+          POSTHOG_SOURCE_REPOSITORY: ${{ inputs.posthog_source_repository }}
+          POSTHOG_SOURCE_SHA: ${{ inputs.posthog_source_sha }}
+          POSTHOG_SOURCE_REF: ${{ inputs.posthog_source_ref }}
           SENTRY_AUTH_TOKEN: ${{ secrets.sentry_auth_token }}
           SENTRY_URL: ${{ secrets.sentry_internal_url }}
           SENTRY_ORG: leaperone
@@ -119,12 +134,7 @@ jobs:
           posthog_log="$RUNNER_TEMP/posthog-sourcemaps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
           sentry_log="$RUNNER_TEMP/sentry-sourcemaps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
 
-          env RUST_LOG=error pnpm dlx @posthog/cli@0.8.4 sourcemap upload \
-            --directory "$SOURCE_MAP_DIR" \
-            --batch-size 10 \
-            --concurrency 2 \
-            --release-name "$POSTHOG_RELEASE_NAME" \
-            --release-version "$POSTHOG_RELEASE_VERSION" \
+          node scripts/upload-posthog-sourcemaps.mjs \
             >"$posthog_log" 2>&1 &
           posthog_pid=$!
 

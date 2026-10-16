@@ -9,6 +9,18 @@ permissions:
   contents: read
 
 jobs:
+  telemetry-sourcemaps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Check source map transfer and upload routing
+        run: node --test scripts/telemetry-sourcemaps.test.mjs
+
   repository-policy:
     runs-on: ubuntu-latest
     steps:

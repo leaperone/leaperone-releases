@@ -62,12 +62,27 @@ timeout --foreground 30s ssh-keyscan -H -T 15 -p "$spool_port" "$SOURCEMAP_SPOOL
 remote_bundle="${SOURCEMAP_SPOOL_ROOT%/}/$bundle_key"
 rsync_command="ssh -i \"$key_file\" -p \"$spool_port\" -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o UserKnownHostsFile=\"$known_hosts_file\" -o StrictHostKeyChecking=yes -o BatchMode=yes"
 
-timeout --foreground 10m rsync -a \
-  --partial \
-  --append-verify \
-  -e "$rsync_command" \
-  "$SOURCEMAP_SPOOL_USERNAME@$SOURCEMAP_SPOOL_HOST:$remote_bundle" \
-  "$bundle_path"
+for attempt in 1 2 3; do
+  if timeout --foreground 10m rsync -a \
+    --partial \
+    --append-verify \
+    -e "$rsync_command" \
+    "$SOURCEMAP_SPOOL_USERNAME@$SOURCEMAP_SPOOL_HOST:$remote_bundle" \
+    "$bundle_path"; then
+    break
+  else
+    status=$?
+  fi
+  case "$status" in
+    10|12|30|35|124|255) ;;
+    *) exit "$status" ;;
+  esac
+  if [ "$attempt" -eq 3 ]; then
+    exit "$status"
+  fi
+  echo "Source map transfer interrupted; resuming partial bundle (attempt $((attempt + 1))/3)." >&2
+  sleep 5
+done
 
 timeout --foreground 2m rsync -a \
   -e "$rsync_command" \

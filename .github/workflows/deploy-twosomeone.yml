@@ -633,8 +633,11 @@ jobs:
       posthog_release_name: 2SOMEone
       posthog_release_version: ${{ needs.prepare.outputs.app_sha }}
       posthog_project_id: ${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
+      posthog_source_repository: leaperone/2SOMEone
+      posthog_source_sha: ${{ needs.prepare.outputs.source_sha }}
+      posthog_source_ref: ${{ needs.prepare.outputs.ref }}
       sentry_project: 2someone-web
-      sentry_release: 2someone-web@${{ needs.prepare.outputs.app_sha }}
+      sentry_release: 2someone-web@${{ needs.prepare.outputs.source_sha }}
     secrets:
       spool_host: ${{ secrets.DE_APP_HOST }}
       spool_username: ${{ secrets.DE_APP_USERNAME }}
