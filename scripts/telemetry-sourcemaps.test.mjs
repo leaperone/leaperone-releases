@@ -52,14 +52,18 @@ async function executable(directory, name, source) {
   await writeFile(join(directory, "bin", name), source, { mode: 0o700 });
 }
 
-test("PostHog rejects an incomplete source coordinate before launching the CLI", async t => {
+for (const source of [
+  { name: "incomplete", sha: "", ref: "main" },
+  { name: "empty-ref", sha: "a".repeat(40), ref: "" },
+  { name: "control-character", sha: "a".repeat(40), ref: "main\nother" },
+]) test(`PostHog rejects a ${source.name} source coordinate before launching the CLI`, async t => {
   const directory = await fixture(t);
   await executable(directory, "pnpm", "#!/usr/bin/env bash\nexit 42\n");
   const result = await run(process.execPath, ["scripts/upload-posthog-sourcemaps.mjs"], {
     PATH: `${join(directory, "bin")}:${process.env.PATH}`,
     POSTHOG_CLI_HOST: "http://127.0.0.1:1", POSTHOG_CLI_API_KEY: "synthetic-token", POSTHOG_CLI_PROJECT_ID: "2",
     SOURCE_MAP_DIR: directory, POSTHOG_RELEASE_NAME: "test-release", POSTHOG_RELEASE_VERSION: "abcdef0",
-    POSTHOG_SOURCE_REPOSITORY: "test-owner/source-app", POSTHOG_SOURCE_SHA: "", POSTHOG_SOURCE_REF: "main",
+    POSTHOG_SOURCE_REPOSITORY: "test-owner/source-app", POSTHOG_SOURCE_SHA: source.sha, POSTHOG_SOURCE_REF: source.ref,
   });
   assert.equal(result.code, 1);
   assert.match(result.output, /Invalid PostHog source coordinate/);
@@ -72,6 +76,16 @@ test("2SOMEone build and upload use the same full Sentry source SHA", async t =>
   await executable(directory, "git", `#!/usr/bin/env bash\nif [ "$*" = "rev-parse HEAD" ]; then echo ${source}; elif [ "$*" = "rev-parse --short=7 HEAD" ]; then echo ${source.slice(0, 7)}; else exit 2; fi\n`);
   const output = join(directory, "output");
   const env = { PATH: `${join(directory, "bin")}:${process.env.PATH}`, GITHUB_OUTPUT: output, EXPECTED_SOURCE_SHA: source };
+  const dispatch = {
+    "github.event.inputs.ref || github.event.client_payload.ref": "main",
+    "github.event.inputs.env || github.event.client_payload.env": "beta",
+    "github.event.client_payload.components || github.event.client_payload.build_targets": "web",
+    "github.event_name": "repository_dispatch",
+  };
+  const setRefScript = workflow.match(/id: set-ref[\s\S]*?        run: \|\n([\s\S]*?)\n      - name: Detect web-v/)[1].replace(/^ {10}/gm, "").replace(/\$\{\{ (.+?) \}\}/g, (_, expression) => { assert(expression in dispatch); return dispatch[expression]; });
+  assert.equal((await run("bash", ["-euo", "pipefail", "-c", setRefScript], { ...env, RAW_SOURCE_SHA: source })).code, 0);
+  const setRef = Object.fromEntries((await readFile(output, "utf8")).trim().split("\n").map(line => line.split("=")));
+  await writeFile(output, "");
   const coordinateScript = workflow.match(/id: source-coordinate[\s\S]*?        run: \|\n([\s\S]*?)\n  build-and-push:/)[1].replace(/^ {10}/gm, "");
   assert.equal((await run("bash", ["-euo", "pipefail", "-c", coordinateScript], env)).code, 0);
   const coordinate = Object.fromEntries((await readFile(output, "utf8")).trim().split("\n").map(line => line.split("=")));
@@ -80,8 +94,14 @@ test("2SOMEone build and upload use the same full Sentry source SHA", async t =>
   const releaseScript = workflow.match(/id: sentry\n        run: (.+)/)[1];
   assert.equal((await run("bash", ["-euo", "pipefail", "-c", releaseScript], env)).code, 0);
   const release = (await readFile(output, "utf8")).match(/^release=(.+)$/m)[1];
-  const context = { "steps.sentry.outputs.release": release, "needs.prepare.outputs.source_sha": coordinate.source_sha, "needs.prepare.outputs.app_sha": coordinate.app_sha, "needs.prepare.outputs.ref": "main" };
-  const evaluate = template => template.replace(/\$\{\{ (.+?) \}\}/g, (_, expression) => { assert(expression in context); return context[expression]; });
+  const context = { "steps.sentry.outputs.release": release, "steps.source-coordinate.outputs.source_sha": coordinate.source_sha, "steps.source-coordinate.outputs.app_sha": coordinate.app_sha, "steps.set-ref.outputs.ref": setRef.ref };
+  const evaluate = template => template.replace(/\$\{\{ (.+?) \}\}/g, (_, expression) => { assert.equal(typeof context[expression], "string", `Missing workflow output: ${expression}`); return context[expression]; });
+  const prepareOutputs = workflow.match(/  prepare:[\s\S]*?    outputs:\n([\s\S]*?)    steps:/)[1];
+  for (const name of ["source_sha", "app_sha", "ref"]) {
+    const definition = prepareOutputs.match(new RegExp(`^      ${name}: (.+)$`, "m"))?.[1];
+    assert(definition, `prepare must export ${name}`);
+    context[`needs.prepare.outputs.${name}`] = evaluate(definition);
+  }
   const builds = [...workflow.matchAll(/^\s+SENTRY_RELEASE=(.+)$/gm)].map(match => evaluate(match[1]));
   assert.equal(builds.length, 2);
   const uploaded = evaluate(workflow.match(/^\s+sentry_release: (.+)$/m)[1]);
@@ -143,10 +163,11 @@ fs.writeFileSync(destination,env.BUNDLE);
 }
 
 const conditions = [{ bucket: "posthog" }, ["eq", "$key", "test-source-map"]];
-const accepted = ["upload", "bucket-array", "no-trailing-slash", "source-metadata"];
+const accepted = ["upload", "bucket-array", "no-trailing-slash", "source-metadata", "source-metadata-tag"];
 for (const mode of [...accepted, "host-object", "host-array", "http", "query", "userinfo", "port", "trailing-slash", "encoded-path", "wrong-bucket", "bucket-conflict", "missing-bucket", "invalid-base64", "missing-policy", "malformed", "scope", "api-query", "unknown-endpoint", "no-auth", "wrong-auth", "redirect", "cli-failure"]) {
   test(`PostHog routing: ${mode}`, async t => {
     const directory = await fixture(t);
+    const sourceRef = mode === "source-metadata-tag" ? "refs/tags/web-v1.2.3+候选.1" : "source-branch";
     const signedConditions = mode === "host-object" ? [...conditions, { Host: "objects.invalid" }] : mode === "host-array" ? [...conditions, ["eq", "$host", "objects.invalid"]] : mode === "bucket-array" ? [["eq", "$bucket", "posthog"]] : mode === "bucket-conflict" ? [...conditions, { bucket: "other" }] : mode === "missing-bucket" ? [] : conditions;
     const fields = { key: "test-source-map", policy: Buffer.from(JSON.stringify({ conditions: signedConditions })).toString("base64"), "x-amz-signature": "synthetic-signature" };
     if (mode === "invalid-base64") fields.policy = "!" + fields.policy;
@@ -171,7 +192,7 @@ for (const mode of [...accepted, "host-object", "host-array", "http", "query", "
 const assert=require('node:assert/strict'), fs=require('node:fs');
 (async()=>{
   const env=process.env, host=env.POSTHOG_CLI_HOST;
-  if(env.MODE==='source-metadata') assert.deepEqual([env.GITHUB_ACTIONS,env.GITHUB_REPOSITORY,env.GITHUB_SHA,env.GITHUB_REF_NAME,env.GITHUB_SERVER_URL],['true','test-owner/source-app','0123456789abcdef0123456789abcdef01234567','source-branch','https://github.com']);
+  if(env.MODE.startsWith('source-metadata')) assert.deepEqual([env.GITHUB_ACTIONS,env.GITHUB_REPOSITORY,env.GITHUB_SHA,env.GITHUB_REF_NAME,env.GITHUB_SERVER_URL],['true','test-owner/source-app','0123456789abcdef0123456789abcdef01234567',${JSON.stringify(sourceRef)},'https://github.com']);
   else assert.equal(env.GITHUB_REPOSITORY,'test-owner/automation');
   fs.writeFileSync(env.FIXTURE+'/adapter',host);
   assert.deepEqual(process.argv.slice(2),['dlx','@posthog/cli@0.8.4','sourcemap','upload','--directory',env.SOURCE_MAP_DIR,'--batch-size','10','--concurrency','2','--release-name','test-release','--release-version','abcdef0']);
@@ -181,7 +202,7 @@ const assert=require('node:assert/strict'), fs=require('node:fs');
   const headers={'content-type':'application/json'};
   if(env.MODE!=='no-auth') headers.authorization=env.MODE==='wrong-auth'?'Bearer incorrect-token':'Bearer synthetic-token';
   const response=await fetch(host+route+endpoint,{method:'POST',headers,body:JSON.stringify({symbol_sets:[{chunk_id:'sample'}]})});
-  if(!['upload','bucket-array','no-trailing-slash','source-metadata'].includes(env.MODE)) { assert.equal(response.status,502); return; }
+  if(!['upload','bucket-array','no-trailing-slash','source-metadata','source-metadata-tag'].includes(env.MODE)) { assert.equal(response.status,502); return; }
   assert.equal(response.status,200);
   const form=(await response.json()).id_map.sample.presigned_url;
   assert.equal(form.url,env.INTERNAL+'/posthog');
@@ -198,7 +219,7 @@ const assert=require('node:assert/strict'), fs=require('node:fs');
       POSTHOG_CLI_HOST: internal, POSTHOG_CLI_API_KEY: "synthetic-token", POSTHOG_CLI_PROJECT_ID: "2",
       SOURCE_MAP_DIR: directory, POSTHOG_RELEASE_NAME: "test-release", POSTHOG_RELEASE_VERSION: "abcdef0",
       GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "test-owner/automation", GITHUB_SHA: "a".repeat(40), GITHUB_REF_NAME: "main", GITHUB_SERVER_URL: "https://github.com",
-      POSTHOG_SOURCE_REPOSITORY: mode === "source-metadata" ? "test-owner/source-app" : "", POSTHOG_SOURCE_SHA: mode === "source-metadata" ? "0123456789abcdef0123456789abcdef01234567" : "", POSTHOG_SOURCE_REF: mode === "source-metadata" ? "source-branch" : "",
+      POSTHOG_SOURCE_REPOSITORY: mode.startsWith("source-metadata") ? "test-owner/source-app" : "", POSTHOG_SOURCE_SHA: mode.startsWith("source-metadata") ? "0123456789abcdef0123456789abcdef01234567" : "", POSTHOG_SOURCE_REF: mode.startsWith("source-metadata") ? sourceRef : "",
     });
     assert.equal(result.code, accepted.includes(mode) ? 0 : mode === "cli-failure" ? 23 : 1, result.output);
     assert.equal(requests.length, accepted.includes(mode) ? 3 : ["scope", "api-query", "unknown-endpoint", "no-auth", "wrong-auth", "cli-failure"].includes(mode) ? 0 : 1, result.output);

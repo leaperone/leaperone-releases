@@ -8,7 +8,7 @@ for (const name of ["POSTHOG_CLI_HOST", "POSTHOG_CLI_API_KEY", "POSTHOG_CLI_PROJ
 }
 if (!/^\d+$/.test(env.POSTHOG_CLI_PROJECT_ID)) throw new Error("Invalid PostHog project ID");
 const hasSource = [env.POSTHOG_SOURCE_REPOSITORY, env.POSTHOG_SOURCE_SHA, env.POSTHOG_SOURCE_REF].some(Boolean);
-if (hasSource && (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(env.POSTHOG_SOURCE_REPOSITORY ?? "") || !/^[0-9a-f]{40}$/.test(env.POSTHOG_SOURCE_SHA ?? "") || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(env.POSTHOG_SOURCE_REF ?? ""))) {
+if (hasSource && (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(env.POSTHOG_SOURCE_REPOSITORY ?? "") || !/^[0-9a-f]{40}$/.test(env.POSTHOG_SOURCE_SHA ?? "") || !env.POSTHOG_SOURCE_REF || /[\u0000-\u001f\u007f]/.test(env.POSTHOG_SOURCE_REF))) {
   throw new Error("Invalid PostHog source coordinate");
 }
 const sourceEnv = hasSource ? {
