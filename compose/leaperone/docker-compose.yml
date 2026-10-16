@@ -19,10 +19,6 @@ services:
     environment:
       PORT: 9000
       DENO_ENV: production
-      ENABLE_IMAGE_WORKER: ${ENABLE_IMAGE_WORKER:-true}
-      ENABLE_EMAIL_LISTENER: ${ENABLE_EMAIL_LISTENER:-false}
-      ENABLE_TEMP_IMAGE_SERVER: ${ENABLE_TEMP_IMAGE_SERVER:-true}
-      TEMP_IMAGE_BASE_URL: ${TEMP_IMAGE_BASE_URL:-https://api.leaper.one/temp-images}
     ports:
       - "127.0.0.1:${API_PORT:-9801}:9000"
     networks:
