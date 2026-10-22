@@ -62,7 +62,7 @@ jobs:
           fi
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/2SOMEone
@@ -104,12 +104,12 @@ jobs:
           }
 
       - name: Setup docker-compose
-        uses: KengoTODA/actions-setup-docker-compose@v1
+        uses: KengoTODA/actions-setup-docker-compose@b09fb2b902df45b91982bc46858188f2a714ee5f # v1
         with:
           version: "2.14.2"
 
       - name: Set up Docker Buildx with pinned BuildKit
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver-opts: |
             image=moby/buildkit:v0.31.2
@@ -185,7 +185,7 @@ jobs:
 
       - name: Checkout source map transport
         if: steps.set-ref.outputs.is_deployable == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: ${{ github.repository }}
           ref: ${{ github.sha }}
@@ -205,7 +205,7 @@ jobs:
 
       - name: Login to Aliyun Docker Registry (Shanghai)
         if: steps.set-ref.outputs.is_deployable == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: registry.cn-shanghai.aliyuncs.com
           username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
@@ -213,7 +213,7 @@ jobs:
 
       - name: Login to Aliyun Docker Registry (Hong Kong)
         if: steps.set-ref.outputs.is_deployable == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: registry.cn-hongkong.aliyuncs.com
           username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
@@ -228,7 +228,7 @@ jobs:
 
       - name: Setup Node.js & pnpm
         if: steps.set-ref.outputs.is_deployable == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
 
@@ -264,7 +264,7 @@ jobs:
 
       - name: Deploy to Production (Shanghai)
         if: steps.set-ref.outputs.is_deployable == 'true'
-        uses: appleboy/ssh-action@v1.0.0
+        uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799 # v1.0.0
         with:
           host: ${{ secrets.ALIYUN_CN_HOST }}
           username: ${{ secrets.ALIYUN_CN_USERNAME }}
@@ -274,7 +274,7 @@ jobs:
 
       - name: Deploy to Production (Hong Kong)
         if: steps.set-ref.outputs.is_deployable == 'true'
-        uses: appleboy/ssh-action@v1.0.0
+        uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799 # v1.0.0
         with:
           host: ${{ secrets.ALIYUN_HK_HOST }}
           username: ${{ secrets.ALIYUN_CN_USERNAME }}
