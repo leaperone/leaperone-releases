@@ -7,9 +7,8 @@ on:
     types: [deploy-leaperone]
 
 concurrency:
-  # API releases target one production container. WWW and Dashboard have
-  # separate routing-free workflows and must never be started here.
-  group: deploy-leaperone-api-production
+  # Serialize API production deploys with WWW/Dashboard via one repo-scoped group.
+  group: leaperone-frontends-production
   cancel-in-progress: false
 
 jobs:
