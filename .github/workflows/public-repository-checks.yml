@@ -59,3 +59,9 @@ jobs:
             echo "ERROR: README.md exposes operational details" >&2
             exit 1
           fi
+
+      - name: Verify LEAPERone deploy concurrency policy
+        run: |
+          set -euo pipefail
+          python3 scripts/verify-leaperone-deploy-concurrency.py
+          python3 scripts/verify-leaperone-deploy-concurrency.py --self-test
