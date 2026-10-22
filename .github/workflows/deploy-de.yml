@@ -51,7 +51,7 @@ jobs:
       TARGET_REGISTRY_HOST: ${{ secrets.DE_REGISTRY_HOST || 'registry.cn-hongkong.aliyuncs.com' }}
     steps:
       - name: Checkout deployment configs
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -81,7 +81,7 @@ jobs:
           fi
 
       - name: Sync compose directory to server
-        uses: appleboy/scp-action@v0.1.7
+        uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634 # v0.1.7
         with:
           host: ${{ secrets.DE_APP_HOST }}
           username: ${{ secrets.DE_APP_USERNAME }}
@@ -93,7 +93,7 @@ jobs:
           overwrite: true
 
       - name: Sync repository deployment script to server
-        uses: appleboy/scp-action@v0.1.7
+        uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634 # v0.1.7
         with:
           host: ${{ secrets.DE_APP_HOST }}
           username: ${{ secrets.DE_APP_USERNAME }}
@@ -105,7 +105,7 @@ jobs:
           overwrite: true
 
       - name: Deploy
-        uses: appleboy/ssh-action@v1.0.0
+        uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799 # v1.0.0
         env:
           DEPLOY_COMPONENTS: ${{ inputs.components }}
           IMAGE_SOURCE_SHA: ${{ inputs.image_source_sha }}

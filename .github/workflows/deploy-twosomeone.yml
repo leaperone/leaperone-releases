@@ -196,7 +196,7 @@ jobs:
 
       - name: Checkout exact 2SOMEone source coordinate
         if: steps.set-ref.outputs.is_deployable == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/2SOMEone
@@ -234,7 +234,7 @@ jobs:
       sourcemap_bundle_key: ${{ steps.sourcemaps.outputs.bundle_key }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/2SOMEone
@@ -284,7 +284,7 @@ jobs:
           }
 
       - name: Login to Aliyun Docker Registry (Shanghai)
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: registry.cn-shanghai.aliyuncs.com
           username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
@@ -292,21 +292,21 @@ jobs:
 
       - name: Login to Aliyun Docker Registry (Hong Kong)
         if: needs.prepare.outputs.is_tag == 'true' || needs.prepare.outputs.deploy_env == 'beta'
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: registry.cn-hongkong.aliyuncs.com
           username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
           password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           # BuildKit 0.32 defaults attestations to OCI artifacts, which Aliyun ACR rejects.
           driver-opts: image=moby/buildkit:v0.31.2
 
       - name: Restore Next.js build cache
         id: nextcache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .docker-cache/next
           key: web-buildcache-deploy-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -314,7 +314,7 @@ jobs:
             web-buildcache-deploy-${{ runner.os }}-
 
       - name: Inject build cache into buildkit
-        uses: reproducible-containers/buildkit-cache-dance@v3.1.2
+        uses: reproducible-containers/buildkit-cache-dance@5b6db76d1da5c8b307d5d2e0706d266521b710de # v3.1.2
         with:
           scratch-dir: ${{ runner.temp }}/buildkit-cache-dance
           cache-map: |
@@ -346,7 +346,7 @@ jobs:
 
       - name: Build and Push (deployable)
         id: build-push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: apps/web/docker/Dockerfile
@@ -371,7 +371,7 @@ jobs:
             next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
 
       - name: Extract source maps from same buildkit cache
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: apps/web/docker/Dockerfile
@@ -395,7 +395,7 @@ jobs:
         run: tar -czf sourcemaps.tar -C ./sourcemaps/next .
 
       - name: Checkout source map transport
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: ${{ github.repository }}
           ref: ${{ github.sha }}
@@ -463,14 +463,14 @@ jobs:
         options: --health-cmd "pg_isready -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - name: Checkout 2SOMEone
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/2SOMEone
           ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
 
@@ -685,7 +685,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Deploy Beta to Hong Kong
-        uses: appleboy/ssh-action@v1.0.0
+        uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799 # v1.0.0
         with:
           host: ${{ secrets.ALIYUN_HK_HOST }}
           username: ${{ secrets.ALIYUN_CN_USERNAME }}
@@ -700,7 +700,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to Production (Shanghai)
-        uses: appleboy/ssh-action@v1.0.0
+        uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799 # v1.0.0
         with:
           host: ${{ secrets.ALIYUN_CN_HOST }}
           username: ${{ secrets.ALIYUN_CN_USERNAME }}
@@ -715,7 +715,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to Production (Hong Kong)
-        uses: appleboy/ssh-action@v1.0.0
+        uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799 # v1.0.0
         with:
           host: ${{ secrets.ALIYUN_HK_HOST }}
           username: ${{ secrets.ALIYUN_CN_USERNAME }}
