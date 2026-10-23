@@ -21,30 +21,51 @@ async function fixture(t) {
   return directory;
 }
 
-test("PostHog routing: interrupted child exits zero", async t => {
+for (const stopMode of ["zero", "descendant", "resistant"]) test(`PostHog routing: interrupted child ${stopMode}`, async t => {
   const directory = await fixture(t);
   await executable(directory, "pnpm", `#!/usr/bin/env node
 const fs=require('node:fs');
-process.on('SIGTERM',()=>process.exit(0));
+process.on('SIGTERM',()=>{if(process.env.STOP_MODE!=='resistant') process.exit(0);});
+if(process.env.STOP_MODE==='descendant') require('node:child_process').spawn(process.execPath,['-e',
+  "process.on('SIGTERM',()=>{});require('node:fs').writeFileSync(process.env.FIXTURE+'/descendant',String(process.pid));setInterval(()=>{},1000);"
+],{stdio:'inherit'});
 fs.writeFileSync(process.env.FIXTURE+'/ready',JSON.stringify({pid:process.pid,adapter:process.env.POSTHOG_CLI_HOST}));
 setInterval(()=>{},1000);
 `);
   const child = spawn(process.execPath, ["scripts/upload-posthog-sourcemaps.mjs"], { cwd: root, env: {
-    ...process.env, PATH: `${join(directory, "bin")}:${process.env.PATH}`, FIXTURE: directory,
+    ...process.env, PATH: `${join(directory, "bin")}:${process.env.PATH}`, FIXTURE: directory, STOP_MODE: stopMode,
     POSTHOG_CLI_HOST: "http://127.0.0.1:1", POSTHOG_CLI_API_KEY: "synthetic-token", POSTHOG_CLI_PROJECT_ID: "2",
     SOURCE_MAP_DIR: directory, POSTHOG_RELEASE_NAME: "test-release", POSTHOG_RELEASE_VERSION: "abcdef0",
-  }, timeout: 10_000 });
+  } });
+  const watchdog = setTimeout(() => child.kill("SIGKILL"), 15_000);
+  t.after(() => clearTimeout(watchdog));
   t.after(() => { if (child.exitCode === null) child.kill(); });
-  const closed = new Promise(resolve => child.on("close", (code, signal) => resolve({ code, signal })));
-  let ready;
-  for (let i = 0; i < 100 && !ready; i++) {
+  const closed = new Promise(resolve => child.on("exit", (code, signal) => resolve({ code, signal })));
+  let ready, descendant;
+  t.after(() => {
+    if (ready) {
+      try { process.kill(-ready.pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+    }
+  });
+  for (let i = 0; i < 100 && (!ready || (stopMode === "descendant" && !descendant)); i++) {
     ready = await readFile(join(directory, "ready"), "utf8").then(JSON.parse).catch(() => null);
-    if (!ready) await delay(20);
+    if (ready && stopMode === "descendant") {
+      descendant = await readFile(join(directory, "descendant"), "utf8").then(Number).catch(() => null);
+    }
+    if (!ready || (stopMode === "descendant" && !descendant)) await delay(20);
   }
   assert(ready, "CLI did not start");
+  if (stopMode === "descendant") assert(descendant, "CLI descendant did not start");
   child.kill("SIGTERM");
   assert.deepEqual(await closed, { code: 143, signal: null });
   assert.throws(() => process.kill(ready.pid, 0), { code: "ESRCH" });
+  if (descendant) {
+    for (let i = 0; i < 100; i++) {
+      try { process.kill(descendant, 0); } catch (error) { if (error.code === "ESRCH") break; throw error; }
+      await delay(10);
+    }
+    assert.throws(() => process.kill(descendant, 0), { code: "ESRCH" });
+  }
   await assert.rejects(fetch(ready.adapter));
 });
 
@@ -120,6 +141,71 @@ function run(command, args, env) {
     child.stderr.on("data", data => { output += data; });
     child.on("error", reject);
     child.on("close", (code, signal) => resolve({ code, signal, output }));
+  });
+}
+
+async function runUploadPolicy(t, optional, posthogStatus, sentryStatus, stalled = false) {
+  const directory = await fixture(t);
+  const workflow = await readFile(join(root, ".github/workflows/upload-telemetry-sourcemaps.yml"), "utf8");
+  const script = workflow.match(/- name: Upload to internal PostHog and Sentry[\s\S]*?        run: \|\n([\s\S]*?)\n      - name:/)[1].replace(/^ {10}/gm, "");
+  await executable(directory, "node", `#!/usr/bin/env bash
+[[ "$*" = "scripts/upload-posthog-sourcemaps.mjs" ]] || exit 92
+echo posthog >> "$FIXTURE/calls"
+if [ "$STALLED" = "true" ]; then sleep 10; fi
+exit "$POSTHOG_STATUS"
+`);
+  await executable(directory, "pnpm", `#!/usr/bin/env bash
+echo "$*" >> "$FIXTURE/calls"
+if [[ "$*" = *"sourcemaps upload"* ]]; then exit "$SENTRY_STATUS"; fi
+`);
+  await executable(directory, "timeout", `#!/usr/bin/env bash
+[[ "$1 $2" = "--kill-after=10s 180s" ]] || exit 93
+echo deadline >> "$FIXTURE/calls"
+shift 2
+if [ "$STALLED" = "true" ]; then exec /usr/bin/timeout --kill-after=0.1s 0.3s "$@"; fi
+exec "$@"
+`);
+  const result = await run("bash", ["-euo", "pipefail", "-c", script], {
+    PATH: `${join(directory, "bin")}:${process.env.PATH}`, FIXTURE: directory,
+    RUNNER_TEMP: directory, GITHUB_RUN_ID: "1", GITHUB_RUN_ATTEMPT: "1", SOURCE_MAP_DIR: directory,
+    ALLOW_POSTHOG_FAILURE: String(optional), POSTHOG_STATUS: String(posthogStatus), SENTRY_STATUS: String(sentryStatus), STALLED: String(stalled),
+    POSTHOG_CLI_API_KEY: "synthetic-token", POSTHOG_CLI_PROJECT_ID: "2", POSTHOG_CLI_HOST: "http://127.0.0.1:1",
+    SENTRY_AUTH_TOKEN: "synthetic-token", SENTRY_URL: "http://127.0.0.1:1", SENTRY_RELEASE: "test-release",
+  });
+  const calls = (await readFile(join(directory, "calls"), "utf8")).trim().split("\n");
+  assert(calls.includes("posthog"), result.output);
+  assert(calls.includes("deadline"), "PostHog must run with the bounded timeout");
+  assert(calls.includes(`dlx @sentry/cli@2.58.5 sourcemaps upload --release test-release ${directory}`));
+  assert.equal(calls.includes("dlx @sentry/cli@2.58.5 releases finalize test-release"), sentryStatus === 0);
+  return result;
+}
+
+test("upload policy: only the 2SOMEone Beta caller opts in", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/upload-telemetry-sourcemaps.yml"), "utf8");
+  assert.match(workflow, /allow_posthog_failure:\n\s+required: false\n\s+type: boolean\n\s+default: false/);
+  assert.match(workflow, /ALLOW_POSTHOG_FAILURE: \$\{\{ inputs.allow_posthog_failure \}\}/);
+  for (const caller of ["twosomeone", "twssomeren", "leaperone-frontend", "multipost"]) {
+    const source = await readFile(join(root, `.github/workflows/deploy-${caller}.yml`), "utf8");
+    if (caller === "twosomeone") {
+      assert.match(source, /allow_posthog_failure: \$\{\{ needs.prepare.outputs.deploy_env == 'beta' \}\}/);
+    } else {
+      assert.doesNotMatch(source, /allow_posthog_failure:/);
+    }
+  }
+});
+
+for (const optional of [false, true]) {
+  for (const posthogStatus of [0, 1]) for (const sentryStatus of [0, 1]) {
+    test(`upload policy: optional=${optional}, PostHog=${posthogStatus}, Sentry=${sentryStatus}`, async t => {
+      const result = await runUploadPolicy(t, optional, posthogStatus, sentryStatus);
+      assert.equal(result.code, sentryStatus !== 0 || (posthogStatus !== 0 && !optional) ? 1 : 0, result.output);
+      assert.equal(result.output.includes("::warning::PostHog"), optional && posthogStatus !== 0);
+    });
+  }
+  test(`upload policy: stalled PostHog, optional=${optional}`, { skip: process.platform !== "linux" }, async t => {
+    const result = await runUploadPolicy(t, optional, 0, 0, true);
+    assert.equal(result.code, optional ? 0 : 1, result.output);
+    if (optional) assert.match(result.output, /::warning::PostHog.*124/);
   });
 }
 
