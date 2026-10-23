@@ -97,11 +97,19 @@ const child = spawn("pnpm", [
   "--release-name", env.POSTHOG_RELEASE_NAME, "--release-version", env.POSTHOG_RELEASE_VERSION,
 ], { stdio: "inherit", detached: true, env: { ...env, ...sourceEnv, RUST_LOG: "error", POSTHOG_CLI_HOST: `http://127.0.0.1:${server.address().port}` } });
 let interrupted;
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => {
-  interrupted = signal === "SIGINT" ? 130 : 143;
-  if (child.pid && child.exitCode === null && child.signalCode === null) {
+let killTimer;
+function signalChildGroup(signal) {
+  if (child.pid) {
     try { process.kill(-child.pid, signal); } catch (error) { if (error.code !== "ESRCH") throw error; }
   }
+}
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => {
+  if (interrupted) return;
+  interrupted = signal === "SIGINT" ? 130 : 143;
+  signalChildGroup(signal);
+  // Kill the detached CLI before the outer timeout kills this wrapper at 10s.
+  killTimer = setTimeout(() => signalChildGroup("SIGKILL"), 9_000);
+  killTimer.unref();
 });
 try {
   process.exitCode = await new Promise((resolve, reject) => {
@@ -109,6 +117,8 @@ try {
     child.on("close", (code, signal) => resolve(interrupted ?? (code === 0 && routingFailed ? 1 : (code ?? (signal === "SIGINT" ? 130 : 143)))));
   });
 } finally {
+  clearTimeout(killTimer);
+  if (interrupted) signalChildGroup("SIGKILL");
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));
 }

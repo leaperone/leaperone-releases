@@ -21,30 +21,51 @@ async function fixture(t) {
   return directory;
 }
 
-test("PostHog routing: interrupted child exits zero", async t => {
+for (const stopMode of ["zero", "descendant", "resistant"]) test(`PostHog routing: interrupted child ${stopMode}`, async t => {
   const directory = await fixture(t);
   await executable(directory, "pnpm", `#!/usr/bin/env node
 const fs=require('node:fs');
-process.on('SIGTERM',()=>process.exit(0));
+process.on('SIGTERM',()=>{if(process.env.STOP_MODE!=='resistant') process.exit(0);});
+if(process.env.STOP_MODE==='descendant') require('node:child_process').spawn(process.execPath,['-e',
+  "process.on('SIGTERM',()=>{});require('node:fs').writeFileSync(process.env.FIXTURE+'/descendant',String(process.pid));setInterval(()=>{},1000);"
+],{stdio:'inherit'});
 fs.writeFileSync(process.env.FIXTURE+'/ready',JSON.stringify({pid:process.pid,adapter:process.env.POSTHOG_CLI_HOST}));
 setInterval(()=>{},1000);
 `);
   const child = spawn(process.execPath, ["scripts/upload-posthog-sourcemaps.mjs"], { cwd: root, env: {
-    ...process.env, PATH: `${join(directory, "bin")}:${process.env.PATH}`, FIXTURE: directory,
+    ...process.env, PATH: `${join(directory, "bin")}:${process.env.PATH}`, FIXTURE: directory, STOP_MODE: stopMode,
     POSTHOG_CLI_HOST: "http://127.0.0.1:1", POSTHOG_CLI_API_KEY: "synthetic-token", POSTHOG_CLI_PROJECT_ID: "2",
     SOURCE_MAP_DIR: directory, POSTHOG_RELEASE_NAME: "test-release", POSTHOG_RELEASE_VERSION: "abcdef0",
-  }, timeout: 10_000 });
+  } });
+  const watchdog = setTimeout(() => child.kill("SIGKILL"), 15_000);
+  t.after(() => clearTimeout(watchdog));
   t.after(() => { if (child.exitCode === null) child.kill(); });
-  const closed = new Promise(resolve => child.on("close", (code, signal) => resolve({ code, signal })));
-  let ready;
-  for (let i = 0; i < 100 && !ready; i++) {
+  const closed = new Promise(resolve => child.on("exit", (code, signal) => resolve({ code, signal })));
+  let ready, descendant;
+  t.after(() => {
+    if (ready) {
+      try { process.kill(-ready.pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+    }
+  });
+  for (let i = 0; i < 100 && (!ready || (stopMode === "descendant" && !descendant)); i++) {
     ready = await readFile(join(directory, "ready"), "utf8").then(JSON.parse).catch(() => null);
-    if (!ready) await delay(20);
+    if (ready && stopMode === "descendant") {
+      descendant = await readFile(join(directory, "descendant"), "utf8").then(Number).catch(() => null);
+    }
+    if (!ready || (stopMode === "descendant" && !descendant)) await delay(20);
   }
   assert(ready, "CLI did not start");
+  if (stopMode === "descendant") assert(descendant, "CLI descendant did not start");
   child.kill("SIGTERM");
   assert.deepEqual(await closed, { code: 143, signal: null });
   assert.throws(() => process.kill(ready.pid, 0), { code: "ESRCH" });
+  if (descendant) {
+    for (let i = 0; i < 100; i++) {
+      try { process.kill(descendant, 0); } catch (error) { if (error.code === "ESRCH") break; throw error; }
+      await delay(10);
+    }
+    assert.throws(() => process.kill(descendant, 0), { code: "ESRCH" });
+  }
   await assert.rejects(fetch(ready.adapter));
 });
 
