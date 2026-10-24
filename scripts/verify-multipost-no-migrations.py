@@ -1,242 +1,98 @@
 #!/usr/bin/env python3
-"""Web-only MultiPost release guard: no db/ drift since last web-v* tag and Atlas status OK."""
-
-from __future__ import annotations
-
+"""Validate an unchanged database and a read-only Atlas status before Web deployment."""
 import json
 import os
 import re
 import subprocess
 import sys
-import urllib.parse
-from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-READONLY_OPTION = "default_transaction_read_only=on"
-PRISMA_QUERY_KEYS = (
-    "schema",
-    "pgbouncer",
-    "connection_limit",
-    "pool_timeout",
-    "connect_timeout",
-    "socket_timeout",
-    "statement_cache_size",
-    "TimeZone",
-)
-WEB_TAG_PATTERN = "web-v*"
-DB_SCOPE = "db"
-ATLAS_CMD = (
-    "atlas",
-    "migrate",
-    "status",
-    "--env",
-    "production",
-    "--config",
-    "file://db/atlas/atlas.hcl",
-    "--format",
-    "{{ json . }}",
-)
+PRISMA_QUERY_KEYS = {
+    "schema", "pgbouncer", "connection_limit", "pool_timeout", "connect_timeout",
+    "socket_timeout", "statement_cache_size", "TimeZone",
+}
+READONLY_OPTION = "-c default_transaction_read_only=on"
+ATLAS_CMD = [
+    "atlas", "migrate", "status", "--env", "production", "--config",
+    "file://db/atlas/atlas.hcl", "--format", "{{ json . }}",
+]
 
 
 class VerifyError(Exception):
     pass
 
 
-def _run(
-    args: list[str],
-    *,
-    cwd: str | None = None,
-    check: bool = True,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        args,
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        check=check,
-    )
-
-
-def _safe_fail(message: str) -> None:
-    print(message, file=sys.stderr)
-    raise VerifyError(message)
-
-
-def resolve_baseline_tag() -> str:
+def command(args, *, env=None):
     try:
-        result = _run(
-            [
-                "git",
-                "describe",
-                "--tags",
-                "--match",
-                WEB_TAG_PATTERN,
-                "--abbrev=0",
-                "HEAD^",
-            ],
-            check=True,
-        )
-    except subprocess.CalledProcessError:
-        _safe_fail("migration guard: no prior web-v release tag found for baseline")
-    tag = result.stdout.strip()
-    if not tag or not re.fullmatch(r"(refs/tags/)?web-v[0-9]+\.[0-9]+\.[0-9]+.*", tag):
-        _safe_fail("migration guard: baseline tag is missing or not a web-v release")
-    return tag
+        return subprocess.run(args, env=env, check=True, capture_output=True, text=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        # Atlas errors can include the database URL, so never forward raw stderr.
+        raise VerifyError(f"migration guard: {args[0]} command failed; details withheld") from None
 
 
-def assert_no_db_diff_since(baseline: str) -> None:
-    try:
-        _run(["git", "diff", "--quiet", baseline, "HEAD", "--", DB_SCOPE], check=True)
-    except subprocess.CalledProcessError:
-        _safe_fail(
-            "migration guard: database tree changed since last web release; "
-            "web-only deploy cannot include schema or migration updates"
-        )
-
-
-def strip_prisma_query_params(url: str) -> str:
-    parsed = urllib.parse.urlsplit(url)
-    if not parsed.query:
-        return url
-    pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-    filtered = [(k, v) for k, v in pairs if k not in PRISMA_QUERY_KEYS]
-    query = urllib.parse.urlencode(filtered)
-    return urllib.parse.urlunsplit(
-        (parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment)
-    )
-
-
-def _normalize_options_value(options: str) -> str:
-    lowered = options.lower()
-    if "default_transaction_read_only=off" in lowered.replace(" ", ""):
-        _safe_fail("migration guard: refusing database URL that disables read-only transactions")
-    if READONLY_OPTION.replace("=", "=") in lowered.replace(" ", ""):
-        # already requests read-only; still ensure our -c form is present
-        pass
-    cleaned = re.sub(
-        r"-c\s+default_transaction_read_only=\w+",
-        "",
-        options,
-        flags=re.IGNORECASE,
-    ).strip()
-    suffix = f"-c {READONLY_OPTION}"
-    return f"{cleaned} {suffix}".strip() if cleaned else suffix
-
-
-def enforce_readonly_database_url(url: str) -> str:
-    url = strip_prisma_query_params(url)
-    parsed = urllib.parse.urlsplit(url)
-    pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-    options_value: str | None = None
-    rest: list[tuple[str, str]] = []
-    for key, value in pairs:
+def enforce_readonly_database_url(url):
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
+        raise VerifyError("migration guard: invalid PostgreSQL connection URL")
+    pairs, options = [], []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key in PRISMA_QUERY_KEYS:
+            continue
+        if key.lower() in {"default_transaction_read_only", "transaction_read_only"}:
+            if value.lower() not in {"on", "true", "1"}:
+                raise VerifyError("migration guard: conflicting read-only connection setting")
+            continue
         if key == "options":
-            options_value = value
+            if re.search(r"(?:default_)?transaction_read_only\s*=\s*(?:off|false|0)\b", value, re.I):
+                raise VerifyError("migration guard: conflicting read-only connection options")
+            options.append(value)
         else:
-            rest.append((key, value))
-    merged_options = _normalize_options_value(options_value or "")
-    rest.append(("options", merged_options))
-    query = urllib.parse.urlencode(rest)
-    return urllib.parse.urlunsplit(
-        (parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment)
-    )
+            pairs.append((key, value))
+    pairs.append(("options", " ".join([*options, READONLY_OPTION])))
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(pairs), parsed.fragment))
 
 
-def _pending_count(payload: Any) -> int | None:
-    if isinstance(payload, dict):
-        if "Pending" in payload and isinstance(payload["Pending"], (int, float)):
-            return int(payload["Pending"])
-        if "pending" in payload and isinstance(payload["pending"], (int, float)):
-            return int(payload["pending"])
-        for value in payload.values():
-            found = _pending_count(value)
-            if found is not None:
-                return found
-    elif isinstance(payload, list):
-        for item in payload:
-            found = _pending_count(item)
-            if found is not None:
-                return found
-    return None
-
-
-def _current_count(payload: Any) -> int | None:
-    if isinstance(payload, dict):
-        if "Current" in payload and isinstance(payload["Current"], (int, float)):
-            return int(payload["Current"])
-        if "current" in payload and isinstance(payload["current"], (int, float)):
-            return int(payload["current"])
-        for value in payload.values():
-            found = _current_count(value)
-            if found is not None:
-                return found
-    elif isinstance(payload, list):
-        for item in payload:
-            found = _current_count(item)
-            if found is not None:
-                return found
-    return None
-
-
-def _status_ok(payload: Any) -> bool:
-    if isinstance(payload, dict):
-        status = payload.get("Status") or payload.get("status")
-        if isinstance(status, str) and status.upper() == "OK":
-            return True
-        for value in payload.values():
-            if _status_ok(value):
-                return True
-    elif isinstance(payload, list):
-        return any(_status_ok(item) for item in payload)
-    return False
-
-
-def run_atlas_status_readonly(database_url: str) -> tuple[int | None, int | None]:
-    env = {**os.environ, "MULTIPOST_DATABASE_URL": database_url}
+def validate_atlas_status(raw):
     try:
-        result = _run(list(ATLAS_CMD), check=True, cwd=None)
-    except subprocess.CalledProcessError as exc:
-        _safe_fail("migration guard: atlas migrate status failed (details withheld)")
-        raise VerifyError from exc
-    stdout = result.stdout.strip()
-    if not stdout:
-        _safe_fail("migration guard: atlas migrate status returned empty output")
-    try:
-        payload = json.loads(stdout)
-    except json.JSONDecodeError:
-        _safe_fail("migration guard: atlas migrate status returned non-JSON output")
-    if not _status_ok(payload):
-        _safe_fail("migration guard: atlas migrate status is not OK")
-    pending = _pending_count(payload)
-    if pending is None:
-        _safe_fail("migration guard: could not read pending migration count from atlas status")
-    if pending != 0:
-        _safe_fail("migration guard: pending database migrations must be zero for web-only deploy")
-    current = _current_count(payload)
-    return current, pending
+        status = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        raise VerifyError("migration guard: Atlas returned invalid JSON") from None
+    if not isinstance(status, dict) or status.get("Status") != "OK":
+        raise VerifyError("migration guard: Atlas status is not OK")
+    available, applied = status.get("Available"), status.get("Applied")
+    # Atlas status JSON exposes Available/Applied and Next, not a Pending count.
+    if not isinstance(available, list) or not isinstance(applied, list):
+        raise VerifyError("migration guard: unrecognized Atlas status schema")
+    if not available or len(available) != len(applied) or status.get("Next") != "Already at latest version":
+        raise VerifyError("migration guard: pending or incomplete migrations")
+    current = status.get("Current")
+    if not isinstance(current, str) or not re.fullmatch(r"[0-9]+", current):
+        raise VerifyError("migration guard: missing current migration version")
+    return {"current": current, "applied": len(applied), "pending": 0}
 
 
-def main() -> int:
+def verify():
     raw_url = os.environ.get("MULTIPOST_DATABASE_URL", "").strip()
     if not raw_url:
-        print("MULTIPOST_DATABASE_URL is required", file=sys.stderr)
-        return 1
+        raise VerifyError("migration guard: MULTIPOST_DATABASE_URL is required")
+    baseline = command([
+        "git", "describe", "--tags", "--match", "web-v*", "--abbrev=0", "HEAD^",
+    ]).strip()
+    if not re.fullmatch(r"web-v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", baseline):
+        raise VerifyError("migration guard: no valid prior Web release tag")
+    command(["git", "diff", "--quiet", baseline, "HEAD", "--", "db"])
+    env = {**os.environ, "MULTIPOST_DATABASE_URL": enforce_readonly_database_url(raw_url)}
+    status = validate_atlas_status(command(ATLAS_CMD, env=env))
+    return {"baseline_tag": baseline, **status, "migration_guard": "ok"}
+
+
+def main():
     try:
-        baseline = resolve_baseline_tag()
-        assert_no_db_diff_since(baseline)
-        readonly_url = enforce_readonly_database_url(raw_url)
-        current, pending = run_atlas_status_readonly(readonly_url)
-        print(
-            json.dumps(
-                {
-                    "baseline_tag": baseline,
-                    "atlas_current": current,
-                    "atlas_pending": pending,
-                    "migration_guard": "ok",
-                }
-            )
-        )
+        print(json.dumps(verify()))
         return 0
-    except VerifyError:
+    except (VerifyError, ValueError):
+        # Keep even malformed connection URLs and subprocess errors out of logs.
+        print("Web-only migration verification failed; no migration was executed.", file=sys.stderr)
         return 1
 
 

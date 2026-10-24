@@ -18,6 +18,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
+      - name: Verify Web-only migration guard
+        run: python3 -m unittest discover -s scripts -p test_verify_multipost_no_migrations.py -v
       - name: Check source map transfer and upload routing
         run: node --test scripts/telemetry-sourcemaps.test.mjs scripts/multipost-components.test.mjs
 
