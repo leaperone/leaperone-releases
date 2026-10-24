@@ -18,6 +18,7 @@ jobs:
       components: ${{ steps.resolve.outputs.components }}
       build_web: ${{ steps.resolve.outputs.build_web }}
       build_backend: ${{ steps.resolve.outputs.build_backend }}
+      migration_mode: ${{ steps.resolve.outputs.migration_mode }}
     steps:
       - name: Resolve deploy context
         id: resolve
@@ -35,7 +36,11 @@ jobs:
               echo "ERROR: retired worker tags require an explicit web or backend component" >&2
               exit 1
             fi
-            COMPONENTS="web,backend"
+            if [[ "$REF" =~ ^(refs/tags/)?web-v ]]; then
+              COMPONENTS="web"
+            else
+              COMPONENTS="web,backend"
+            fi
           fi
 
           BUILD_WEB="false"
@@ -68,6 +73,12 @@ jobs:
             exit 1
           fi
 
+          if [ "$BUILD_WEB" = "true" ] && [ "$BUILD_BACKEND" = "false" ]; then
+            MIGRATION_MODE="verify-only"
+          else
+            MIGRATION_MODE="apply"
+          fi
+
           if [ "$ENV_INPUT" != "" ] && [ "$ENV_INPUT" != "$DEPLOY_ENV" ]; then
             echo "ERROR: deploy-multipost only supports env=production, got: $ENV_INPUT" >&2
             exit 1
@@ -98,6 +109,7 @@ jobs:
           echo "components=$COMPONENTS" >> "$GITHUB_OUTPUT"
           echo "build_web=$BUILD_WEB" >> "$GITHUB_OUTPUT"
           echo "build_backend=$BUILD_BACKEND" >> "$GITHUB_OUTPUT"
+          echo "migration_mode=$MIGRATION_MODE" >> "$GITHUB_OUTPUT"
 
   build-and-push:
     needs: resolve-context
@@ -337,6 +349,7 @@ jobs:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/MultiPost
           ref: ${{ needs.resolve-context.outputs.ref }}
+          fetch-depth: 0
 
       - name: Install Atlas Community
         run: |
@@ -368,7 +381,25 @@ jobs:
             -L 127.0.0.1:15432:127.0.0.1:5432 \
             "${DE_APP_USERNAME}@${DE_APP_HOST}"
 
+      - name: Checkout web-only migration guard
+        if: needs.resolve-context.outputs.migration_mode == 'verify-only'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: .release-automation
+          persist-credentials: false
+
+      - name: Verify database unchanged (web-only)
+        if: needs.resolve-context.outputs.migration_mode == 'verify-only'
+        env:
+          MULTIPOST_DATABASE_URL: ${{ secrets.MULTIPOST_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          python3 .release-automation/scripts/verify-multipost-no-migrations.py
+
       - name: Run database migrations (Atlas)
+        if: needs.resolve-context.outputs.migration_mode == 'apply'
         env:
           MULTIPOST_DATABASE_URL: ${{ secrets.MULTIPOST_DATABASE_URL }}
         run: |

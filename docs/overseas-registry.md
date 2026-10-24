@@ -43,6 +43,11 @@ workflows reject that because masking would hide domestic image references.
   actually ran before the release. A failed backend update
   is restored to that digest from the registry recorded with it. Web keeps
   the previous color stopped for rollback.
+- MultiPost `web-v*` releases default to the web component when dispatch
+  omits `components`. Those web-only runs use `migration_mode=verify-only`:
+  CI compares `db/` against the previous `web-v*` tag and runs read-only
+  Atlas `migrate status` with `Pending=0`. They never call `atlas migrate
+  apply`. Backend-inclusive or `main` deploys keep the existing apply path.
 - The Email Worker deployer writes `REGISTRY_HOST` to its root `.env`
   together with the image fields. An automatic rollback restores the previous
   host and digest and runs Compose with that host.
