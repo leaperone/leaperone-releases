@@ -7,7 +7,7 @@ Overseas releases publish to one registry host selected per run:
 | LEAPERone API | `deploy-leaperone.yml` |
 | LEAPERone WWW and Dashboard (global) | `deploy-leaperone-frontend.yml` via `deploy-leaperone-www.yml`, `deploy-leaperone-dashboard.yml`, `deploy-leaperone-frontends.yml` |
 | LEAPERone Email Worker | `deploy-leaperone-email-worker.yml` |
-| MultiPost web, backend, video-stt-worker | `deploy-multipost.yml` |
+| MultiPost web and backend | `deploy-multipost.yml` |
 
 Domestic releases are unaffected. `leaperone-www-cn` and the 2SOMEone
 workflows always use `registry.cn-hongkong.aliyuncs.com`.
@@ -33,15 +33,14 @@ workflows reject that because masking would hide domestic image references.
 - Every overseas deployment pins the manifest digest returned by the push:
   `api-<source-sha>@<digest>`, `www-<source-sha>@<digest>`,
   `dashboard-<source-sha>@<digest>` and `email-worker-<source-sha>@<digest>`.
-  MultiPost still publishes `latest`, `backend-latest` and
-  `video-stt-worker-latest` for discovery, but deploys `<tag>@<digest>` from
+  MultiPost still publishes `latest` and `backend-latest` for discovery, but deploys `<tag>@<digest>` from
   `component_digests`. A moved tag never changes a running container.
 - `deploy-de.yml` exports the selected host as `REGISTRY_HOST` to the remote
   deployment. Compose prefers the exported value over the root `.env`, so a
   stale host in `.env` cannot redirect a pull. RepoDigest checks run against
   the same host.
 - The MultiPost deployer records the RepoDigest each selected container
-  actually ran before the release. A failed backend or video-stt-worker update
+  actually ran before the release. A failed backend update
   is restored to that digest from the registry recorded with it. Web keeps
   the previous color stopped for rollback.
 - The Email Worker deployer writes `REGISTRY_HOST` to its root `.env`

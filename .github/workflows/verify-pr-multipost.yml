@@ -123,7 +123,3 @@ jobs:
       - name: Backend Deno check
         working-directory: apps/backend
         run: deno check main.ts
-
-      - name: Video STT Deno check
-        working-directory: apps/video-stt-worker
-        run: deno check src/main.ts
