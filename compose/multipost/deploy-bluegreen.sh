@@ -7,8 +7,8 @@
 # 镜像: REGISTRY_HOST 与 COMPONENT_IMAGE_DIGESTS（component=sha256:...）由 workflow 传入，
 #       每个被选组件固定到本次推送的 manifest digest；.env 中的 registry/tag 不参与。
 #
-# 范围: web 做蓝绿（零停机）。video-stt-worker 是无端口单例 worker，backend 是 Germany 唯一
-#       的 cron 单例。DEPLOY_COMPONENTS 可限制本次只部署 web/backend/video-stt-worker。
+# 范围: web 做蓝绿（零停机）。backend 是唯一
+#       的 cron 单例。DEPLOY_COMPONENTS 可限制本次只部署 web/backend。
 #
 # 流量架构（Germany direct origin）：
 #   Cloudflare → Germany Nginx:443（multipost-local.conf，终止 TLS）
@@ -50,7 +50,6 @@ PUBLIC_HOSTS=(multipost.app api.multipost.app)
 DEPLOY_COMPONENTS_RAW="${DEPLOY_COMPONENTS:-all}"
 WANT_WEB=false
 WANT_BACKEND=false
-WANT_VIDEO_STT=false
 
 IFS=',' read -ra COMPONENT_LIST <<< "$DEPLOY_COMPONENTS_RAW"
 for component in "${COMPONENT_LIST[@]}"; do
@@ -62,13 +61,9 @@ for component in "${COMPONENT_LIST[@]}"; do
     backend)
       WANT_BACKEND=true
       ;;
-    video-stt-worker)
-      WANT_VIDEO_STT=true
-      ;;
     all)
       WANT_WEB=true
       WANT_BACKEND=true
-      WANT_VIDEO_STT=true
       ;;
     "")
       ;;
@@ -78,11 +73,11 @@ for component in "${COMPONENT_LIST[@]}"; do
       ;;
   esac
 done
-if [ "$WANT_WEB" = false ] && [ "$WANT_BACKEND" = false ] && [ "$WANT_VIDEO_STT" = false ]; then
+if [ "$WANT_WEB" = false ] && [ "$WANT_BACKEND" = false ]; then
   echo "ERROR: no components selected from DEPLOY_COMPONENTS=${DEPLOY_COMPONENTS_RAW}" >&2
   exit 1
 fi
-echo "==> selected components: web=${WANT_WEB} backend=${WANT_BACKEND} video-stt-worker=${WANT_VIDEO_STT}"
+echo "==> selected components: web=${WANT_WEB} backend=${WANT_BACKEND}"
 
 # ── 镜像固定：latest 系列 tag 会漂移，每个被选组件必须带本次推送的 manifest digest ──
 # shell 导出的变量优先于 .env，所以 .env 里残留的旧 registry / tag 不会生效。
@@ -97,7 +92,6 @@ IMAGE_REPOSITORY="${REGISTRY_HOST}/leaperone/multipost"
 
 WEB_DIGEST=""
 BACKEND_DIGEST=""
-VIDEO_STT_DIGEST=""
 DIGEST_LIST=()
 IFS=',' read -ra DIGEST_LIST <<< "${COMPONENT_IMAGE_DIGESTS:-}"
 for entry in ${DIGEST_LIST[@]+"${DIGEST_LIST[@]}"}; do
@@ -112,7 +106,6 @@ for entry in ${DIGEST_LIST[@]+"${DIGEST_LIST[@]}"}; do
   case "$name" in
     web) WEB_DIGEST="$digest" ;;
     backend) BACKEND_DIGEST="$digest" ;;
-    video-stt-worker) VIDEO_STT_DIGEST="$digest" ;;
     *) echo "ERROR: unknown COMPONENT_IMAGE_DIGESTS entry: ${name}" >&2; exit 1 ;;
   esac
 done
@@ -130,10 +123,6 @@ fi
 if [ "$WANT_BACKEND" = true ]; then
   require_digest backend "$BACKEND_DIGEST"
   export BACKEND_IMAGE_TAG="backend-latest@${BACKEND_DIGEST}"
-fi
-if [ "$WANT_VIDEO_STT" = true ]; then
-  require_digest video-stt-worker "$VIDEO_STT_DIGEST"
-  export VIDEO_STT_WORKER_IMAGE_TAG="video-stt-worker-latest@${VIDEO_STT_DIGEST}"
 fi
 
 # ── 部署锁（flock）：非阻塞，拿不到锁说明已有部署在跑，直接退出 ──────────────────
@@ -219,12 +208,7 @@ restore_resident_service() {
 ensure_resident_services() {
   local services=()
   local compose_args=(-f "$WORKER_COMPOSE")
-  local backend_baseline="" worker_baseline="" failed=0
-  if [ "$WANT_VIDEO_STT" = true ]; then
-    services+=(video-stt-worker)
-    worker_baseline="$(container_repo_digest multipost-video-stt-worker-production)"
-    echo "==> video-stt-worker baseline: ${worker_baseline:-none}"
-  fi
+  local backend_baseline="" failed=0
   if [ "$WANT_BACKEND" = true ]; then
     services+=(backend)
     compose_args+=(--profile backend)
@@ -238,11 +222,6 @@ ensure_resident_services() {
   # 不加 --remove-orphans：避免误删尚保留作回滚的 legacy web 容器（multipost-web-production）。
   echo "==> ensuring resident services run their pinned digests: ${services[*]}"
   docker compose "${compose_args[@]}" up -d --pull always --wait --wait-timeout 180 "${services[@]}" || failed=1
-  if [ "$failed" = 0 ] && [ "$WANT_VIDEO_STT" = true ] \
-    && ! container_runs_digest multipost-video-stt-worker-production "$VIDEO_STT_DIGEST"; then
-    echo "ERROR: video-stt-worker is not running ${IMAGE_REPOSITORY}@${VIDEO_STT_DIGEST}" >&2
-    failed=1
-  fi
   if [ "$failed" = 0 ] && [ "$WANT_BACKEND" = true ] \
     && ! container_runs_digest multipost-backend-production "$BACKEND_DIGEST"; then
     echo "ERROR: backend is not running ${IMAGE_REPOSITORY}@${BACKEND_DIGEST}" >&2
@@ -250,34 +229,17 @@ ensure_resident_services() {
   fi
   if [ "$failed" != 0 ]; then
     echo "ERROR: resident service update failed; restoring baselines" >&2
-    if [ "$WANT_VIDEO_STT" = true ]; then
-      restore_resident_service video-stt-worker multipost-video-stt-worker-production \
-        VIDEO_STT_WORKER_IMAGE_TAG video-stt-worker-latest "$worker_baseline" || true
-    fi
     if [ "$WANT_BACKEND" = true ]; then
       restore_resident_service backend multipost-backend-production \
         BACKEND_IMAGE_TAG backend-latest "$backend_baseline" || true
     fi
     return 1
   fi
-  if [ "$WANT_VIDEO_STT" = true ]; then
-    record_deployment video-stt-worker "$worker_baseline" "${IMAGE_REPOSITORY}@${VIDEO_STT_DIGEST}"
-  fi
   if [ "$WANT_BACKEND" = true ]; then
     record_deployment backend "$backend_baseline" "${IMAGE_REPOSITORY}@${BACKEND_DIGEST}"
   fi
 }
 
-run_post_deploy_scripts() {
-  if [ -d "$PROJECT_DIR/scripts" ]; then
-    echo "==> Running post-deploy scripts..."
-    for script in "$PROJECT_DIR"/scripts/*; do
-      if [ -f "$script" ] && [ -x "$script" ]; then
-        echo "--> $(basename "$script")"; "$script"
-      fi
-    done
-  fi
-}
 
 cleanup_images() {
   docker image prune -f >/dev/null 2>&1 || true
@@ -288,9 +250,6 @@ cd "$PROJECT_DIR"
 if [ "$WANT_WEB" != true ]; then
   echo "==> web not selected; skipping blue-green upstream switch"
   ensure_resident_services
-  if [ "$WANT_VIDEO_STT" = true ]; then
-    run_post_deploy_scripts
-  fi
   cleanup_images
   echo "==> deploy complete: selected non-web components updated"
   exit 0
@@ -409,13 +368,9 @@ if [ "$(docker inspect -f '{{.State.Running}}' "$LEGACY_NAME" 2>/dev/null || ech
   docker stop "$LEGACY_NAME" >/dev/null 2>&1 || true
 fi
 
-# 7. 常驻 worker + backend(Germany 单例)：按 DEPLOY_COMPONENTS 选择性拉新镜像并保证在跑。
+# 7. 按 DEPLOY_COMPONENTS 更新发布 backend 单例。
 ensure_resident_services
 
-# 8. 跑可执行的 post-deploy scripts/*（当前用于 worker 带宽限制）。
-if [ "$WANT_VIDEO_STT" = true ]; then
-  run_post_deploy_scripts
-fi
 
 # 9. 清理悬空镜像（与 legacy 行为一致）
 cleanup_images
