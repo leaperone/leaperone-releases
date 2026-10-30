@@ -1,0 +1,9 @@
+name: vibeface-www-${DEPLOY_ENV:-production}
+
+services:
+  www:
+    image: ${REGISTRY_HOST:-de.leaper.one:5443}/leaperone/vibeface-www:${VIBEFACE_IMAGE_TAG:?VIBEFACE_IMAGE_TAG must be immutable}@${VIBEFACE_IMAGE_DIGEST:?VIBEFACE_IMAGE_DIGEST must be an exact manifest digest}
+    container_name: vibeface-www-${DEPLOY_ENV:-production}
+    ports:
+      - "127.0.0.1:${VIBEFACE_PORT:-9830}:80"
+    restart: unless-stopped

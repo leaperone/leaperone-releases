@@ -1,0 +1,71 @@
+name: Deploy Vibeface WWW
+run-name: >-
+  Deploy Vibeface WWW · src=${{ github.event.client_payload.source_sha || 'missing' }}
+
+on:
+  repository_dispatch:
+    types: [deploy-vibeface-www]
+
+concurrency:
+  group: vibeface-www-production
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+      image_name: ${{ steps.publish.outputs.image_name }}
+      image_digest: ${{ steps.publish.outputs.image_digest }}
+    steps:
+      - name: Validate requested source
+        id: source
+        env:
+          SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'ERROR: source_sha must be a full Git SHA' >&2; exit 1; }
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+      - name: Checkout vibeface source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: leaperone/vibeface
+          ref: ${{ steps.source.outputs.sha }}
+          token: ${{ secrets.ACCESS_TOKEN }}
+          persist-credentials: false
+      - name: Validate source identity
+        env:
+          EXPECTED_SHA: ${{ steps.source.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Login to DE registry
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        with:
+          registry: de.leaper.one:5443
+          username: ${{ secrets.DE_REGISTRY_USERNAME }}
+          password: ${{ secrets.DE_REGISTRY_PASSWORD }}
+      - name: Build and publish immutable image
+        id: publish
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          image='de.leaper.one:5443/leaperone/vibeface-www'
+          tag="www-${SOURCE_SHA}"
+          docker build --file apps/www/Dockerfile --tag "$image:$tag" .
+          output="$(docker push "$image:$tag" 2>&1)"
+          printf '%s\n' "$output"
+          digest="$(printf '%s\n' "$output" | sed -nE 's/^.*digest: (sha256:[0-9a-f]{64}).*$/\1/p' | tail -1)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'ERROR: missing registry digest' >&2; exit 1; }
+          echo "image_name=leaperone/vibeface-www:$tag" >> "$GITHUB_OUTPUT"
+          echo "image_digest=$digest" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: build
+    uses: ./.github/workflows/deploy-de.yml
+    with:
+      project: vibeface-www
+      env: production
+      image_source_sha: ${{ needs.build.outputs.source_sha }}
+      image_name: ${{ needs.build.outputs.image_name }}
+      image_digest: ${{ needs.build.outputs.image_digest }}
+    secrets: inherit
