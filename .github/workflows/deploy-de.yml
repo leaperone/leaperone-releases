@@ -154,7 +154,7 @@ jobs:
             esac
 
             case "${{ inputs.project }}" in
-              leaperone|leaperone-www|leaperone-dashboard)
+              leaperone|leaperone-www|leaperone-dashboard|vibeface-www)
                 if [ "${#IMAGE_SOURCE_SHA}" -ne 40 ] || [[ "$IMAGE_SOURCE_SHA" == *[!0-9a-f]* ]]; then
                   echo "ERROR: ${{ inputs.project }} deploy requires a full lowercase Git source SHA" >&2
                   exit 1
@@ -185,6 +185,13 @@ jobs:
                 EXPECTED_IMAGE_NAME="leaperone/leaperone:dashboard-${IMAGE_SOURCE_SHA}"
                 export DASHBOARD_IMAGE_TAG="dashboard-${IMAGE_SOURCE_SHA}"
                 export DASHBOARD_IMAGE_DIGEST="$IMAGE_DIGEST"
+                ;;
+              vibeface-www)
+                COMPONENT="www"
+                CONTAINER_NAME="vibeface-www-production"
+                EXPECTED_IMAGE_NAME="leaperone/vibeface-www:www-${IMAGE_SOURCE_SHA}"
+                export VIBEFACE_IMAGE_TAG="www-${IMAGE_SOURCE_SHA}"
+                export VIBEFACE_IMAGE_DIGEST="$IMAGE_DIGEST"
                 ;;
             esac
 
