@@ -164,12 +164,28 @@ class Assets(HTMLParser):
     def __init__(self):
         super().__init__()
         self.paths = set()
+        self.inline_scripts = []
+        self.external_scripts = set()
+        self.inline = None
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if tag == 'script':
+            self.inline = [] if 'src' not in attrs else None
+            if attrs.get('src'):
+                self.external_scripts.add(attrs['src'])
         path = attrs.get('src') if tag == 'script' else attrs.get('href') if tag == 'link' else None
         if path and path.startswith('/assets/'):
             self.paths.add(path)
+
+    def handle_data(self, data):
+        if self.inline is not None:
+            self.inline.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == 'script' and self.inline is not None:
+            self.inline_scripts.append(''.join(self.inline))
+            self.inline = None
 
 
 def smoke(base, site, sha=None):
@@ -178,6 +194,11 @@ def smoke(base, site, sha=None):
     opener = build_opener(Redirects())
     policy = json.loads((site / '.vibeface-build.json').read_text())['content_security_policy'] if sha else None
 
+    index = (site / 'index.html').read_bytes()
+    assets = Assets()
+    assets.feed(index.decode())
+    require(assets.paths, 'app index has no startup assets')
+
     def check(path, expected, html=False):
         with opener.open(Request(urljoin(base, path), headers={'Cache-Control': 'no-cache', 'User-Agent': 'Vibeface-Deploy-Smoke/1.0'}), timeout=30) as response:
             require(response.status == 200, 'HTTP smoke did not return 200')
@@ -185,15 +206,31 @@ def smoke(base, site, sha=None):
                 require(response.headers.get('X-Vibeface-Source') == sha, 'HTTP source header is stale')
                 require(response.headers.get('Content-Security-Policy') == policy, 'HTTP content security policy is stale')
                 require(response.headers.get('Cache-Control') == 'no-store', 'app shell must not be cached')
-            require(hashlib.sha256(response.read(len(expected) + 1)).digest() == hashlib.sha256(expected).digest(),
-                    'HTTP content does not match the deployed artifact')
+            limit = len(expected) + (64 * 1024 if html else 0)
+            content = bytearray()
+            while len(content) <= limit:
+                chunk = response.read1(min(64 * 1024, limit + 1 - len(content)))
+                if not chunk:
+                    break
+                content.extend(chunk)
+            require(len(content) <= limit, 'HTTP response exceeds the smoke limit')
+            if html:
+                page = Assets()
+                page.feed(content.decode())
+                require(assets.paths <= page.paths and assets.external_scripts <= page.external_scripts,
+                        'HTTP HTML is missing app startup assets')
+                require(page.inline_scripts == assets.inline_scripts, 'HTTP inline bootstrap scripts changed')
+                for source in page.external_scripts - assets.external_scripts:
+                    address = urlsplit(source)
+                    require(address.scheme == 'https' and address.netloc == 'static.cloudflareinsights.com'
+                            and (address.path == '/beacon.min.js' or address.path.startswith('/beacon.min.js/')),
+                            'HTTP HTML contains an unexpected external script')
+            else:
+                require(hashlib.sha256(content).digest() == hashlib.sha256(expected).digest(),
+                        'HTTP asset does not match the deployed artifact')
 
-    index = (site / 'index.html').read_bytes()
     for path in ('/', '/connect', '/join'):
         check(path, index, html=True)
-    assets = Assets()
-    assets.feed(index.decode())
-    require(assets.paths, 'app index has no startup assets')
     for path in sorted(assets.paths):
         require('..' not in path.split('/'), 'unsafe asset URL')
         check(path, (site / path.lstrip('/')).read_bytes())
@@ -223,7 +260,7 @@ def self_test(source=None):
     with tempfile.TemporaryDirectory(dir='.artifacts') as directory:
         site = Path(directory)
         (site / 'assets').mkdir()
-        (site / 'index.html').write_text('<script src="/assets/app.js"></script>')
+        (site / 'index.html').write_text('<body><script>window.app = true;</script><script src="/assets/app.js"></script></body>')
         (site / 'assets/app.js').write_text('console.log("app")')
         (site / '.vibeface-build.json').write_text(json.dumps({'content_security_policy': "default-src 'self'"}))
         class Handler(BaseHTTPRequestHandler):
@@ -240,8 +277,14 @@ def self_test(source=None):
                 self.send_header('Content-Security-Policy', 'stale' if self.mode == 'policy' else "default-src 'self'")
                 self.send_header('Cache-Control', 'public' if self.mode == 'cache' else 'no-store')
                 self.end_headers()
-                self.wfile.write(b'stale' if self.mode == 'stale' else
-                                 (site / 'assets/app.js' if self.path.startswith('/assets/') else site / 'index.html').read_bytes())
+                body = (site / 'assets/app.js' if self.path.startswith('/assets/') else site / 'index.html').read_bytes()
+                if self.mode == 'transformed':
+                    body = body.replace(b'</body>', b'<script src="https://static.cloudflareinsights.com/beacon.min.js/fixture"></script></body>')
+                elif self.mode == 'inline':
+                    body = body.replace(b'window.app = true;', b'window.app = false;')
+                elif self.mode == 'external':
+                    body += b'<script src="https://other.invalid/script.js"></script>'
+                self.wfile.write(b'stale' if self.mode == 'stale' else body)
             def log_message(self, *_args):
                 pass
         server = HTTPServer(('127.0.0.1', 0), Handler)
@@ -249,7 +292,9 @@ def self_test(source=None):
         try:
             base = f'http://127.0.0.1:{server.server_port}'
             smoke(base, site, 'a' * 40)
-            for mode in ('loop', 'cross-origin', 'missing', 'stale', 'source', 'policy', 'cache'):
+            Handler.mode = 'transformed'
+            smoke(base, site, 'a' * 40)
+            for mode in ('loop', 'cross-origin', 'missing', 'stale', 'source', 'policy', 'cache', 'inline', 'external'):
                 Handler.mode = mode
                 try:
                     smoke(base, site, 'a' * 40)

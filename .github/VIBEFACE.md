@@ -24,7 +24,7 @@ The deployment also requires these repository Secrets:
 
 The SSH account must be root or have non-interactive sudo permission for activation. The host needs Python 3, Nginx, systemd, and curl. Activation must be able to write the release directory, configuration file, and current symlink, and reload Nginx.
 
-After activation, HTTP smoke requires `/`, `/connect`, `/join`, and startup assets referenced by the index to return 200 with the published bytes. It also checks the source header, CSP, and uncached HTML. Redirect loops, cross-origin redirects, missing resources, and stale content fail the job.
+After activation, HTTP smoke requires `/`, `/connect`, `/join`, and startup assets referenced by the index to return 200. Startup assets must match the published bytes, and public HTML must preserve the expected assets and inline bootstrap scripts. It permits the existing Cloudflare Insights external beacon, and checks the source header, CSP, and uncached HTML. Redirect loops, cross-origin redirects, missing resources, and stale content fail the job.
 The hosted smoke failure does not automatically roll back an already activated release.
 
 Prereleases cannot enter this workflow. Successful dispatch is only a request; check the receiving workflow result before reporting deployment success.
