@@ -1,0 +1,139 @@
+name: Deploy Vibeface App
+run-name: Deploy Vibeface App
+
+on:
+  repository_dispatch:
+    types: [deploy-vibeface-app]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vibeface-app-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout deployment tools
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Validate release request
+        id: request
+        env:
+          SOURCE_TAG: ${{ github.event.client_payload.ref }}
+          SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_TAG" =~ ^app-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo 'An exact stable app tag is required' >&2; exit 1;
+          }
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'A full source SHA is required' >&2; exit 1; }
+          echo "tag=$SOURCE_TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+      - name: Checkout exact app source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: leaperone/vibeface
+          ref: ${{ steps.request.outputs.sha }}
+          fetch-depth: 0
+          path: .artifacts/source
+          token: ${{ secrets.ACCESS_TOKEN }}
+          persist-credentials: false
+      - name: Verify published static artifact
+        env:
+          GH_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          SOURCE_TAG: ${{ steps.request.outputs.tag }}
+          SOURCE_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/deploy-vibeface-app.py prepare \
+            --source .artifacts/source --destination .artifacts/release \
+            --tag "$SOURCE_TAG" --sha "$SOURCE_SHA"
+      - name: Activate verified release on existing Nginx
+        env:
+          DEPLOY_HOST: ${{ secrets.DE_APP_HOST }}
+          DEPLOY_USER: ${{ secrets.DE_APP_USERNAME }}
+          DEPLOY_KEY: ${{ secrets.DE_APP_SSH_KEY }}
+          DEPLOY_HOST_KEY: ${{ secrets.DE_APP_SSH_HOST_KEY }}
+          DEPLOY_PORT: ${{ vars.DE_APP_PORT || '22' }}
+          RELEASES_DIR: ${{ secrets.VIBEFACE_APP_RELEASES_DIR }}
+          NGINX_CONFIG: ${{ secrets.VIBEFACE_APP_NGINX_CONFIG }}
+          APP_URL: ${{ secrets.VIBEFACE_APP_URL }}
+          SOURCE_TAG: ${{ steps.request.outputs.tag }}
+          SOURCE_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_KEY DEPLOY_HOST_KEY RELEASES_DIR NGINX_CONFIG APP_URL; do
+            test -n "${!name}" || { echo "Required deployment secret is missing: $name" >&2; exit 1; }
+          done
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$DEPLOY_USER" =~ ^[a-zA-Z0-9_-]+$ ]]
+          [[ "$DEPLOY_PORT" =~ ^[0-9]+$ ]]
+          for path in "$RELEASES_DIR" "$NGINX_CONFIG"; do
+            [[ "$path" =~ ^/[a-zA-Z0-9_./-]+$ && "$path" != / && "$path" != */../* && "$path" != */.. ]]
+          done
+          python3 - <<'PYTHON'
+          import os
+          from urllib.parse import urlsplit
+          url = urlsplit(os.environ['APP_URL'])
+          if url.scheme != 'https' or not url.hostname or url.username or url.password or url.path not in ('', '/') or url.query or url.fragment:
+              raise SystemExit('VIBEFACE_APP_URL must be an HTTPS origin')
+          PYTHON
+          command -v ssh >/dev/null
+          command -v scp >/dev/null
+          install -d -m 700 .artifacts/ssh
+          printf '%s\n' "$DEPLOY_KEY" > .artifacts/ssh/key
+          stage=''
+          cleanup() {
+            if [[ -n "$stage" ]]; then
+              printf '%s\n' "$stage" | ssh "${ssh_options[@]}" "$remote" 'read -r stage; rm -rf -- "$stage"' >/dev/null 2>&1 || true
+            fi
+            rm -f .artifacts/ssh/key
+          }
+          trap cleanup EXIT
+          printf '%s\n' "$DEPLOY_HOST_KEY" > .artifacts/ssh/known_hosts
+          chmod 600 .artifacts/ssh/key .artifacts/ssh/known_hosts
+          known_host="$DEPLOY_HOST"
+          if [[ "$DEPLOY_PORT" != 22 ]]; then known_host="[$DEPLOY_HOST]:$DEPLOY_PORT"; fi
+          if ! ssh-keygen -F "$known_host" -f .artifacts/ssh/known_hosts >/dev/null 2>&1; then
+            echo 'DE_APP_SSH_HOST_KEY must contain a matching known_hosts entry' >&2; exit 1
+          fi
+          transport=(-i "$PWD/.artifacts/ssh/key" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PWD/.artifacts/ssh/known_hosts")
+          ssh_options=("${transport[@]}" -p "$DEPLOY_PORT")
+          remote="$DEPLOY_USER@$DEPLOY_HOST"
+          if ! candidate=$(ssh "${ssh_options[@]}" "$remote" 'set -e; command -v python3 >/dev/null; if [ "$(id -u)" != 0 ]; then sudo -n true; fi; mktemp -d' 2> .artifacts/deploy.log); then
+            echo 'SSH or passwordless activation privileges are unavailable' >&2; exit 1
+          fi
+          [[ "$candidate" =~ ^/[a-zA-Z0-9_./-]+$ && "$candidate" != / && "$candidate" != */../* ]]
+          stage="$candidate"
+          archive=".artifacts/release/vibeface-app-${SOURCE_TAG#app-v}.tar.gz"
+          checksum=$(sha256sum "$archive" | cut -d' ' -f1)
+          if ! scp "${transport[@]}" -P "$DEPLOY_PORT" "$archive" "$remote:$stage/release.tar.gz" >> .artifacts/deploy.log 2>&1 ||
+             ! scp "${transport[@]}" -P "$DEPLOY_PORT" scripts/deploy-vibeface-app.py "$remote:$stage/deploy.py" >> .artifacts/deploy.log 2>&1; then
+            echo 'Verified release upload failed' >&2; exit 1
+          fi
+          if ! printf '%s\n' "$stage" "$checksum" "$RELEASES_DIR" "$NGINX_CONFIG" "$SOURCE_TAG" "$SOURCE_SHA" "$APP_URL" |
+            ssh "${ssh_options[@]}" "$remote" '
+              set -e
+              read -r stage; read -r checksum; read -r releases; read -r config
+              read -r tag; read -r sha; read -r url
+              if [ "$(id -u)" = 0 ]; then
+                python3 "$stage/deploy.py" activate --archive "$stage/release.tar.gz" --checksum "$checksum" --releases "$releases" --config "$config" --tag "$tag" --sha "$sha" --url "$url"
+              else
+                sudo -n python3 "$stage/deploy.py" activate --archive "$stage/release.tar.gz" --checksum "$checksum" --releases "$releases" --config "$config" --tag "$tag" --sha "$sha" --url "$url"
+              fi
+            ' >> .artifacts/deploy.log 2>&1; then
+            echo 'Nginx release activation failed' >&2; exit 1
+          fi
+      - name: Smoke deployed app and startup assets
+        env:
+          APP_URL: ${{ secrets.VIBEFACE_APP_URL }}
+          SOURCE_TAG: ${{ steps.request.outputs.tag }}
+          SOURCE_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/deploy-vibeface-app.py smoke --url "$APP_URL" --sha "$SOURCE_SHA" \
+            --site ".artifacts/release/unpacked/vibeface-app-${SOURCE_TAG#app-v}/web"
