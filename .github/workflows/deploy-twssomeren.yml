@@ -117,9 +117,6 @@ jobs:
 
       - name: Build Docker images
         env:
-          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
-          POSTHOG_CLI_PROJECT_ID: ${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
-          POSTHOG_2SOMEONE_ENV_ID: ${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.ren
           NEXT_PUBLIC_SENTRY_DSN: ${{ vars.TWOSOMEREN_SENTRY_DSN }}
@@ -135,9 +132,6 @@ jobs:
       - name: Extract exact-build source maps
         if: steps.set-ref.outputs.is_deployable == 'true'
         env:
-          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
-          POSTHOG_CLI_PROJECT_ID: ${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
-          POSTHOG_2SOMEONE_ENV_ID: ${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_HOST: https://t.2some.ren
           NEXT_PUBLIC_SENTRY_DSN: ${{ vars.TWOSOMEREN_SENTRY_DSN }}
@@ -152,18 +146,13 @@ jobs:
           set -euo pipefail
           umask 077
           SENTRY_TOKEN_FILE="$RUNNER_TEMP/sentry-auth-token"
-          POSTHOG_TOKEN_FILE="$RUNNER_TEMP/posthog-personal-api-key"
-          POSTHOG_PROJECT_FILE="$RUNNER_TEMP/posthog-project-id"
           SERVER_ACTIONS_FILE="$RUNNER_TEMP/next-server-actions-key"
-          trap 'rm -f "$SENTRY_TOKEN_FILE" "$POSTHOG_TOKEN_FILE" "$POSTHOG_PROJECT_FILE" "$SERVER_ACTIONS_FILE"' EXIT
+          trap 'rm -f "$SENTRY_TOKEN_FILE" "$SERVER_ACTIONS_FILE"' EXIT
           printf '%s' "$SENTRY_AUTH_TOKEN" > "$SENTRY_TOKEN_FILE"
-          printf '%s' "$POSTHOG_PERSONAL_API_KEY" > "$POSTHOG_TOKEN_FILE"
-          printf '%s' "$POSTHOG_CLI_PROJECT_ID" > "$POSTHOG_PROJECT_FILE"
           printf '%s' "$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY" > "$SERVER_ACTIONS_FILE"
           DOCKER_BUILDKIT=1 docker build \
             -f apps/web/docker/Dockerfile \
             --target sourcemaps \
-            --build-arg POSTHOG_2SOMEONE_ENV_ID="$POSTHOG_2SOMEONE_ENV_ID" \
             --build-arg NEXT_PUBLIC_POSTHOG_KEY="$NEXT_PUBLIC_POSTHOG_KEY" \
             --build-arg NEXT_PUBLIC_POSTHOG_HOST="$NEXT_PUBLIC_POSTHOG_HOST" \
             --build-arg NEXT_PUBLIC_SENTRY_DSN="$NEXT_PUBLIC_SENTRY_DSN" \
@@ -173,8 +162,6 @@ jobs:
             --build-arg SENTRY_ENVIRONMENT="$SENTRY_ENVIRONMENT" \
             --build-arg SENTRY_RELEASE="$SENTRY_RELEASE" \
             --secret id=sentry_auth_token,src="$SENTRY_TOKEN_FILE" \
-            --secret id=posthog_personal_api_key,src="$POSTHOG_TOKEN_FILE" \
-            --secret id=posthog_cli_project_id,src="$POSTHOG_PROJECT_FILE" \
             --secret id=next_server_actions_encryption_key,src="$SERVER_ACTIONS_FILE" \
             --output type=local,dest="$RUNNER_TEMP/sourcemaps" \
             .
@@ -288,9 +275,6 @@ jobs:
     uses: ./.github/workflows/upload-telemetry-sourcemaps.yml
     with:
       bundle_key: twosomeren/${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.build-and-deploy.outputs.source_sha }}.tar
-      posthog_release_name: 2SOMEone
-      posthog_release_version: ${{ needs.build-and-deploy.outputs.source_sha }}
-      posthog_project_id: ${{ vars.POSTHOG_2SOMEONE_PROJECT_ID }}
       sentry_project: 2someone-web
       sentry_release: 2someone-web@${{ needs.build-and-deploy.outputs.source_sha }}
     secrets:
@@ -298,7 +282,5 @@ jobs:
       spool_username: ${{ secrets.PVE_APP_USERNAME }}
       spool_ssh_key: ${{ secrets.PVE_APP_SSH_KEY }}
       spool_root: ${{ secrets.SOURCEMAP_SPOOL_ROOT }}
-      posthog_personal_api_key: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
-      posthog_internal_url: ${{ secrets.POSTHOG_INTERNAL_URL }}
       sentry_auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
       sentry_internal_url: ${{ secrets.SENTRY_INTERNAL_URL }}

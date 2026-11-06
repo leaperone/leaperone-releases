@@ -6,31 +6,6 @@ on:
       bundle_key:
         required: true
         type: string
-      posthog_release_name:
-        required: true
-        type: string
-      posthog_release_version:
-        required: true
-        type: string
-      posthog_project_id:
-        required: true
-        type: string
-      allow_posthog_failure:
-        required: false
-        type: boolean
-        default: false
-      posthog_source_repository:
-        required: false
-        type: string
-        default: ""
-      posthog_source_sha:
-        required: false
-        type: string
-        default: ""
-      posthog_source_ref:
-        required: false
-        type: string
-        default: ""
       sentry_project:
         required: true
         type: string
@@ -49,10 +24,6 @@ on:
       spool_ssh_key:
         required: true
       spool_root:
-        required: true
-      posthog_personal_api_key:
-        required: true
-      posthog_internal_url:
         required: true
       sentry_auth_token:
         required: true
@@ -85,19 +56,11 @@ jobs:
           SOURCEMAP_SPOOL_SSH_KEY: ${{ secrets.spool_ssh_key }}
           SOURCEMAP_SPOOL_ROOT: ${{ secrets.spool_root }}
           BUNDLE_KEY: ${{ inputs.bundle_key }}
-          POSTHOG_PROJECT_ID: ${{ inputs.posthog_project_id }}
-          POSTHOG_RELEASE_VERSION: ${{ inputs.posthog_release_version }}
           SENTRY_RELEASE: ${{ inputs.sentry_release }}
         run: |
           set -euo pipefail
           : "${BUNDLE_KEY:?missing source map bundle key}"
-          : "${POSTHOG_PROJECT_ID:?missing PostHog project ID}"
-          : "${POSTHOG_RELEASE_VERSION:?missing PostHog release version}"
           : "${SENTRY_RELEASE:?missing Sentry release}"
-          if ! [[ "$POSTHOG_PROJECT_ID" =~ ^[0-9]+$ ]]; then
-            echo "ERROR: PostHog project ID must be numeric" >&2
-            exit 1
-          fi
           if ! [[ "$BUNDLE_KEY" =~ /[0-9]+-[0-9]+-[0-9a-f]{7,40}\.tar$ ]]; then
             echo "ERROR: source map bundle key must end with run-attempt-GitSHA.tar" >&2
             exit 1
@@ -107,18 +70,9 @@ jobs:
           scripts/fetch-sourcemap-bundle.sh "$BUNDLE_KEY" "$WORK_DIR/sourcemaps.tar"
           scripts/extract-sourcemap-bundle.sh "$WORK_DIR/sourcemaps.tar" "$WORK_DIR/files"
 
-      - name: Upload to internal PostHog and Sentry
+      - name: Upload to Sentry
         env:
           SOURCE_MAP_DIR: ${{ runner.temp }}/telemetry-sourcemaps-${{ github.run_id }}-${{ github.run_attempt }}/files
-          POSTHOG_CLI_API_KEY: ${{ secrets.posthog_personal_api_key }}
-          POSTHOG_CLI_PROJECT_ID: ${{ inputs.posthog_project_id }}
-          ALLOW_POSTHOG_FAILURE: ${{ inputs.allow_posthog_failure }}
-          POSTHOG_CLI_HOST: ${{ secrets.posthog_internal_url }}
-          POSTHOG_RELEASE_NAME: ${{ inputs.posthog_release_name }}
-          POSTHOG_RELEASE_VERSION: ${{ inputs.posthog_release_version }}
-          POSTHOG_SOURCE_REPOSITORY: ${{ inputs.posthog_source_repository }}
-          POSTHOG_SOURCE_SHA: ${{ inputs.posthog_source_sha }}
-          POSTHOG_SOURCE_REF: ${{ inputs.posthog_source_ref }}
           SENTRY_AUTH_TOKEN: ${{ secrets.sentry_auth_token }}
           SENTRY_URL: ${{ secrets.sentry_internal_url }}
           SENTRY_ORG: leaperone
@@ -126,24 +80,13 @@ jobs:
           SENTRY_RELEASE: ${{ inputs.sentry_release }}
         run: |
           set -euo pipefail
-          : "${POSTHOG_CLI_API_KEY:?missing PostHog API key}"
-          : "${POSTHOG_CLI_PROJECT_ID:?missing PostHog project ID}"
-          : "${POSTHOG_CLI_HOST:?missing internal PostHog URL}"
           : "${SENTRY_AUTH_TOKEN:?missing Sentry auth token}"
           : "${SENTRY_URL:?missing internal Sentry URL}"
-          if ! [[ "$POSTHOG_CLI_PROJECT_ID" =~ ^[0-9]+$ ]]; then
-            echo "ERROR: PostHog project ID must be numeric" >&2
-            exit 1
-          fi
 
-          posthog_log="$RUNNER_TEMP/posthog-sourcemaps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
           sentry_log="$RUNNER_TEMP/sentry-sourcemaps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
-
-          timeout --kill-after=10s 180s node scripts/upload-posthog-sourcemaps.mjs \
-            >"$posthog_log" 2>&1 &
-          posthog_pid=$!
-
+          set +e
           (
+            set -euo pipefail
             if ! pnpm dlx @sentry/cli@2.58.5 releases info "$SENTRY_RELEASE" >/dev/null 2>&1; then
               pnpm dlx @sentry/cli@2.58.5 releases new "$SENTRY_RELEASE"
             fi
@@ -151,24 +94,9 @@ jobs:
               --release "$SENTRY_RELEASE" \
               "$SOURCE_MAP_DIR"
             pnpm dlx @sentry/cli@2.58.5 releases finalize "$SENTRY_RELEASE"
-          ) >"$sentry_log" 2>&1 &
-          sentry_pid=$!
-
-          posthog_status=0
-          sentry_status=0
-          wait "$posthog_pid" || posthog_status=$?
-          wait "$sentry_pid" || sentry_status=$?
-
-          if [ "$posthog_status" -eq 0 ]; then
-            echo "PostHog source maps uploaded successfully."
-          else
-            if [ "$ALLOW_POSTHOG_FAILURE" = "true" ]; then
-              echo "::warning::PostHog source map upload failed (exit $posthog_status); this caller allows PostHog upload failure."
-            fi
-            echo "::group::PostHog source map upload failure"
-            tail -n 120 "$posthog_log" >&2 || true
-            echo "::endgroup::"
-          fi
+          ) >"$sentry_log" 2>&1
+          sentry_status=$?
+          set -euo pipefail
 
           if [ "$sentry_status" -eq 0 ]; then
             echo "Sentry source maps uploaded successfully."
@@ -178,10 +106,9 @@ jobs:
             echo "::endgroup::"
           fi
 
-          rm -f "$posthog_log" "$sentry_log"
-          if [ "$sentry_status" -ne 0 ] ||
-             { [ "$posthog_status" -ne 0 ] && [ "$ALLOW_POSTHOG_FAILURE" != "true" ]; }; then
-            echo "ERROR: one or more required source map uploads failed" >&2
+          rm -f "$sentry_log"
+          if [ "$sentry_status" -ne 0 ]; then
+            echo "ERROR: Sentry source map upload failed" >&2
             exit 1
           fi
 
