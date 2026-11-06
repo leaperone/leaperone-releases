@@ -28,8 +28,8 @@ jobs:
           SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
         run: |
           set -euo pipefail
-          [[ "$SOURCE_TAG" =~ ^app-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
-            echo 'An exact stable app tag is required' >&2; exit 1;
+          [[ "$SOURCE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo 'An exact stable product tag is required' >&2; exit 1;
           }
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'A full source SHA is required' >&2; exit 1; }
           echo "tag=$SOURCE_TAG" >> "$GITHUB_OUTPUT"
@@ -109,7 +109,7 @@ jobs:
           fi
           [[ "$candidate" =~ ^/[a-zA-Z0-9_./-]+$ && "$candidate" != / && "$candidate" != */../* ]]
           stage="$candidate"
-          archive=".artifacts/release/vibeface-app-${SOURCE_TAG#app-v}.tar.gz"
+          archive=".artifacts/release/vibeface-app-${SOURCE_TAG#v}.tar.gz"
           checksum=$(sha256sum "$archive" | cut -d' ' -f1)
           if ! scp "${transport[@]}" -P "$DEPLOY_PORT" "$archive" "$remote:$stage/release.tar.gz" >> .artifacts/deploy.log 2>&1 ||
              ! scp "${transport[@]}" -P "$DEPLOY_PORT" scripts/deploy-vibeface-app.py "$remote:$stage/deploy.py" >> .artifacts/deploy.log 2>&1; then
@@ -136,4 +136,4 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/deploy-vibeface-app.py smoke --url "$APP_URL" --sha "$SOURCE_SHA" \
-            --site ".artifacts/release/unpacked/vibeface-app-${SOURCE_TAG#app-v}/web"
+            --site ".artifacts/release/unpacked/vibeface-app-${SOURCE_TAG#v}/web"
