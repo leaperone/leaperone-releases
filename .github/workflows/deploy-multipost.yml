@@ -169,8 +169,8 @@ jobs:
 
       - name: Build Docker images
         env:
-          # Build-time ID injection is offline. The personal API key is reserved
-          # for the PVE upload job and must not enter image build arguments.
+          # Build-time Sentry ID injection is offline. Upload credentials must
+          # not enter image build arguments.
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.POSTHOG_MULTIPOST_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_HOST: https://t.multipost.app
           NEXT_PUBLIC_SENTRY_DSN: ${{ vars.MULTIPOST_SENTRY_DSN }}
@@ -179,7 +179,7 @@ jobs:
           SENTRY_ORG: leaperone
           SENTRY_PROJECT: multipost-web
           SENTRY_RELEASE: multipost-web@${{ steps.app-sha.outputs.sha }}
-          # Sentry/PostHog IDs are injected into the exact build, but uploads are
+          # Sentry IDs are injected into the exact build, but uploads are
           # owned by the PVE job below. Keep this empty to prevent build-time upload.
           SENTRY_AUTH_TOKEN: ""
         run: |
