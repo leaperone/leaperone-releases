@@ -13,6 +13,8 @@ from urllib.error import HTTPError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+sys.dont_write_bytecode = True
+
 
 def require(condition, message):
     if not condition:
@@ -20,8 +22,8 @@ def require(condition, message):
 
 
 def identity(tag, sha):
-    require(re.fullmatch(r'app-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag),
-            'an exact stable app tag is required')
+    require(re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag),
+            'an exact stable product tag is required')
     require(re.fullmatch(r'[0-9a-f]{40}', sha), 'a full source SHA is required')
 
 
@@ -43,11 +45,32 @@ def prepare(source, destination, tag, sha):
     require(not metadata['isDraft'] and not metadata['isPrerelease'], 'release must be public and stable')
     destination.mkdir(parents=True)
     subprocess.run(['gh', 'release', 'download', tag, '--repo', 'leaperone/vibeface',
-                    '--dir', str(destination)], check=True)
-    expected = dict(app='app', tag=tag, source_commit=sha, version=tag[5:], channel='stable')
-    release.verify_manifest(destination, expected)
-    component = release.unpack(destination / f'vibeface-app-{tag[5:]}.tar.gz', destination / 'unpacked')
-    release.verify_component(component, 'app', expected)
+                    '--pattern', 'release.json', '--dir', str(destination)], check=True)
+    expected = dict(app='product', tag=tag, source_commit=sha, version=tag[1:], channel='stable')
+    manifest = json.loads((destination / 'release.json').read_text())
+    release.verify_release_identity(manifest)
+    require(all(manifest[key] == value for key, value in expected.items()), 'product release identity mismatch')
+    archive_name = f'vibeface-app-{tag[1:]}.tar.gz'
+    selected = {archive_name, archive_name + '.sha256'}
+    seen = set()
+    for asset in manifest['assets']:
+        name = asset['name']
+        release.safe_name(name)
+        require('/' not in name and name not in seen, 'invalid or duplicate product asset')
+        seen.add(name)
+    require(selected <= seen, 'product release is missing the Web component')
+    for name in sorted(selected):
+        subprocess.run(['gh', 'release', 'download', tag, '--repo', 'leaperone/vibeface',
+                        '--pattern', name, '--dir', str(destination)], check=True)
+        asset = next(asset for asset in manifest['assets'] if asset['name'] == name)
+        file = destination / name
+        require(file.is_file() and not file.is_symlink() and file.stat().st_size == asset['size']
+                and release.digest(file) == asset['sha256'], 'Web component download differs from product manifest')
+    archive = destination / archive_name
+    require((destination / (archive_name + '.sha256')).read_text() == f'{release.digest(archive)}  {archive_name}\n',
+            'Web component checksum mismatch')
+    component = release.unpack(archive, destination / 'unpacked')
+    release.verify_component(component, 'app', dict(expected, app='app'))
     site = component / 'web'
     require((site / 'index.html').is_file(), 'app index is missing')
     return site
@@ -90,7 +113,7 @@ def activate(archive, checksum, releases, config, tag, sha, base):
                         'unsafe uploaded archive entry')
                 item.mode &= 0o777
             source.extractall(staging, members=members)
-        site = staging / f'vibeface-app-{tag[5:]}' / 'web'
+        site = staging / f'vibeface-app-{tag[1:]}' / 'web'
         require((site / 'index.html').is_file(), 'uploaded app index is missing')
         policy = json.loads((site / '.vibeface-build.json').read_text())['content_security_policy']
         require(isinstance(policy, str) and policy and not any(c in policy for c in '\r\n"\\$'), 'unsafe content security policy')
@@ -242,15 +265,15 @@ def self_test(source=None):
     import threading
     Path('.artifacts').mkdir(exist_ok=True)
     from http.server import BaseHTTPRequestHandler, HTTPServer
-    for tag, sha in [('app-v1.2.3-rc.1', 'a' * 40), ('www-v1.2.3', 'a' * 40),
-                     ('app-v01.2.3', 'a' * 40), ('app-v1.2.3', 'invalid')]:
+    for tag, sha in [('app-v1.2.3', 'a' * 40), ('v1.2.3-rc.1', 'a' * 40), ('www-v1.2.3', 'a' * 40),
+                     ('v01.2.3', 'a' * 40), ('v1.2.3', 'invalid')]:
         try:
             identity(tag, sha)
         except ValueError:
             pass
         else:
             raise AssertionError('invalid release identity accepted')
-    identity('app-v1.2.3', 'a' * 40)
+    identity('v1.2.3', 'a' * 40)
     try:
         Redirects().redirect_request(Request('https://example.invalid/'), None, 302, '', {}, 'http://example.invalid/')
     except ValueError:
@@ -335,14 +358,14 @@ def self_test(source=None):
             if command[0] == 'curl':
                 return type('Response', (), {'stdout': fail['body']})()
         with patch.object(subprocess, 'run', fake_nginx):
-            activate(archive, checksum, releases, config, 'app-v1.2.3', 'a' * 40, 'https://example.invalid')
+            activate(archive, checksum, releases, config, 'v1.2.3', 'a' * 40, 'https://example.invalid')
             expected = original.replace(str(previous), str(releases / ('a' * 40))).replace('old-policy', "default-src 'self'").replace('0' * 40, 'a' * 40)
             assert config.read_text() == expected and current.resolve() == releases / ('a' * 40)
-            activate(archive, checksum, releases, config, 'app-v1.2.3', 'a' * 40, 'https://example.invalid')
+            activate(archive, checksum, releases, config, 'v1.2.3', 'a' * 40, 'https://example.invalid')
             for command in (['nginx', '-t'], ['systemctl', 'reload', 'nginx']):
                 fail['command'] = command
                 try:
-                    activate(archive, checksum, releases, config, 'app-v1.2.3', 'b' * 40, 'https://example.invalid')
+                    activate(archive, checksum, releases, config, 'v1.2.3', 'b' * 40, 'https://example.invalid')
                 except subprocess.CalledProcessError:
                     pass
                 else:
@@ -350,7 +373,7 @@ def self_test(source=None):
                 assert config.read_text() == expected and current.resolve() == releases / ('a' * 40)
             fail['body'] = b'stale app'
             try:
-                activate(archive, checksum, releases, config, 'app-v1.2.3', 'b' * 40, 'https://example.invalid')
+                activate(archive, checksum, releases, config, 'v1.2.3', 'b' * 40, 'https://example.invalid')
             except ValueError:
                 pass
             else:
@@ -360,7 +383,7 @@ def self_test(source=None):
             active_index = releases / ('a' * 40) / 'index.html'
             active_index.write_text('changed')
             try:
-                activate(archive, checksum, releases, config, 'app-v1.2.3', 'a' * 40, 'https://example.invalid')
+                activate(archive, checksum, releases, config, 'v1.2.3', 'a' * 40, 'https://example.invalid')
             except ValueError:
                 pass
             else:
@@ -368,7 +391,7 @@ def self_test(source=None):
             active_index.write_text('new app')
             for bad_checksum, url in [('f' * 64, 'https://example.invalid'), (checksum, 'https://other.invalid')]:
                 try:
-                    activate(archive, bad_checksum, releases, config, 'app-v1.2.3', 'c' * 40, url)
+                    activate(archive, bad_checksum, releases, config, 'v1.2.3', 'c' * 40, url)
                 except ValueError:
                     pass
                 else:
@@ -385,22 +408,23 @@ def self_test(source=None):
             fixture = root / 'assets'; fixture.mkdir()
             component = root / 'vibeface-app-1.2.3'; (component / 'web').mkdir(parents=True)
             (component / 'web/index.html').write_text('<script src="/assets/app.js"></script>')
-            expected = dict(app='app', tag='app-v1.2.3', source_commit='a' * 40, version='1.2.3', channel='stable')
+            expected = dict(app='app', tag='v1.2.3', source_commit='a' * 40, version='1.2.3', channel='stable')
             info = dict(expected, schema=1, target=None, files=release.files(component))
             release.write_json(component / 'COMPONENT-INFO.json', info)
             archive = fixture / 'vibeface-app-1.2.3.tar.gz'
             release.public_archive(component, archive)
-            manifest = dict(expected, schema=1, assets=[dict(name=p.name, size=p.stat().st_size,
+            manifest = dict(expected, app='product', schema=1, assets=[dict(name=p.name, size=p.stat().st_size,
                             sha256=release.digest(p)) for p in fixture.iterdir()])
             release.write_json(fixture / 'release.json', manifest)
             def fake_run(*args):
                 return json.dumps(dict(isDraft=False, isPrerelease=False)) if args[:3] == ('gh', 'release', 'view') else 'a' * 40
             def fake_process(args, **_kwargs):
                 if args[:3] == ['gh', 'release', 'download']:
-                    for asset in fixture.iterdir():
-                        shutil.copy2(asset, Path(args[-1]) / asset.name)
+                    pattern = args[args.index('--pattern') + 1]
+                    assert pattern in {'release.json', 'vibeface-app-1.2.3.tar.gz', 'vibeface-app-1.2.3.tar.gz.sha256'}
+                    shutil.copy2(fixture / pattern, Path(args[-1]) / pattern)
             with patch.object(sys.modules[__name__], 'run', fake_run), patch.object(subprocess, 'run', fake_process):
-                result = prepare(source, root / 'valid', 'app-v1.2.3', 'a' * 40)
+                result = prepare(source, root / 'valid', 'v1.2.3', 'a' * 40)
                 assert (result / 'index.html').read_bytes() == (component / 'web/index.html').read_bytes()
                 for case in ('wrong-source', 'corrupt-archive'):
                     if case == 'wrong-source':
@@ -410,7 +434,7 @@ def self_test(source=None):
                         archive.write_bytes(b'corrupt')
                     release.write_json(fixture / 'release.json', manifest)
                     try:
-                        prepare(source, root / case, 'app-v1.2.3', 'a' * 40)
+                        prepare(source, root / case, 'v1.2.3', 'a' * 40)
                     except ValueError:
                         pass
                     else:
