@@ -669,20 +669,28 @@ jobs:
       dispatch_workflow: ${{ secrets.PRIVATE_RELEASE_WORKFLOW }}
       dispatch_token: ${{ secrets.PRIVATE_RELEASE_TOKEN }}
 
-  deploy-hk-beta:
+  deploy-overseas-beta:
     needs: [prepare, build-and-push]
     if: needs.prepare.outputs.is_deployable == 'true' && needs.prepare.outputs.deploy_env == 'beta'
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy Beta to Hong Kong
+      - name: Deploy Beta Overseas
         uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799 # v1.0.0
+        env:
+          IMAGE_REF: registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-${{ needs.prepare.outputs.app_sha }}@${{ needs.build-and-push.outputs.image_digest }}
+          DEPLOY_ENV: beta
+          DEPLOY_SCRIPT: ${{ secrets.TWOSOMEONE_OVERSEAS_DEPLOY_SCRIPT }}
         with:
-          host: ${{ secrets.ALIYUN_HK_HOST }}
-          username: ${{ secrets.ALIYUN_CN_USERNAME }}
-          port: ${{ secrets.ALIYUN_CN_PORT }}
-          key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+          host: ${{ secrets.DE_APP_HOST }}
+          username: ${{ secrets.DE_APP_USERNAME }}
+          port: ${{ vars.DE_APP_PORT || '22' }}
+          key: ${{ secrets.DE_APP_SSH_KEY }}
           command_timeout: 20m
-          script: /home/leaperone/services/2someren-web/beta/deploy.sh
+          envs: IMAGE_REF,DEPLOY_ENV,DEPLOY_SCRIPT
+          script: |
+            set -eu
+            : "${DEPLOY_SCRIPT:?missing TWOSOMEONE_OVERSEAS_DEPLOY_SCRIPT secret}"
+            "$DEPLOY_SCRIPT" "$DEPLOY_ENV" "$IMAGE_REF"
 
   deploy-shanghai:
     needs: [prepare, build-and-push, drift-check]
@@ -699,23 +707,31 @@ jobs:
           command_timeout: 20m
           script: ${{ secrets.DEPLOY_TWOSOMEREN_SCRIPT }}
 
-  deploy-hongkong:
+  deploy-overseas:
     needs: [prepare, build-and-push, drift-check]
     if: needs.prepare.outputs.is_tag == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to Production (Hong Kong)
+      - name: Deploy to Production (Overseas)
         uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799 # v1.0.0
+        env:
+          IMAGE_REF: registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-${{ needs.prepare.outputs.app_sha }}@${{ needs.build-and-push.outputs.image_digest }}
+          DEPLOY_ENV: production
+          DEPLOY_SCRIPT: ${{ secrets.TWOSOMEONE_OVERSEAS_DEPLOY_SCRIPT }}
         with:
-          host: ${{ secrets.ALIYUN_HK_HOST }}
-          username: ${{ secrets.ALIYUN_CN_USERNAME }}
-          port: ${{ secrets.ALIYUN_CN_PORT }}
-          key: ${{ secrets.ALIYUN_CN_SSH_PRIVATE_KEY }}
+          host: ${{ secrets.DE_APP_HOST }}
+          username: ${{ secrets.DE_APP_USERNAME }}
+          port: ${{ vars.DE_APP_PORT || '22' }}
+          key: ${{ secrets.DE_APP_SSH_KEY }}
           command_timeout: 20m
-          script: ${{ secrets.DEPLOY_TWOSOMEREN_HK_SCRIPT }}
+          envs: IMAGE_REF,DEPLOY_ENV,DEPLOY_SCRIPT
+          script: |
+            set -eu
+            : "${DEPLOY_SCRIPT:?missing TWOSOMEONE_OVERSEAS_DEPLOY_SCRIPT secret}"
+            "$DEPLOY_SCRIPT" "$DEPLOY_ENV" "$IMAGE_REF"
 
   cdn-refresh:
-    needs: [prepare, deploy-shanghai, deploy-hongkong]
+    needs: [prepare, deploy-shanghai, deploy-overseas]
     if: needs.prepare.outputs.is_tag == 'true'
     runs-on: ubuntu-latest
     steps:
