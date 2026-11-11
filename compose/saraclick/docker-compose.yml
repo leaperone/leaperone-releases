@@ -1,0 +1,52 @@
+name: saraclick-production
+
+services:
+  saraclick:
+    image: ${SARACLICK_WEB_IMAGE:?missing pinned web image}
+    container_name: saraclick-web-production
+    env_file:
+      - path: web.env
+        format: raw
+    ports: ["${SARACLICK_WEB_BIND:?missing web bind}:3000"]
+    networks:
+      production:
+        aliases: [saraclick]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://' + (process.env.HOSTNAME || '127.0.0.1') + ':3000/api/auth/providers').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  saraclick-backend:
+    image: ${SARACLICK_BACKEND_IMAGE:?missing pinned backend image}
+    container_name: saraclick-backend-production
+    env_file:
+      - path: backend.env
+        format: raw
+    networks:
+      production:
+        aliases: [saraclick-backend]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    healthcheck:
+      test: [CMD, deno, eval, "const r = await fetch('http://127.0.0.1:9000/health'); if (!r.ok) Deno.exit(1);"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+networks:
+  production:
+    external: true
+    name: ${SARACLICK_NETWORK:?missing production network}
