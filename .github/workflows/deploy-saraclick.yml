@@ -15,7 +15,9 @@ concurrency:
 
 jobs:
   build-and-deploy:
+    if: ${{ !contains(github.event.client_payload.message || '', 'noci') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     outputs:
       pr_number: ${{ steps.set-ref.outputs.pr_number }}
       is_deployable: ${{ steps.set-ref.outputs.is_deployable }}
@@ -101,15 +103,6 @@ jobs:
           repository: leaperone/SaraClick
           ref: ${{ steps.set-ref.outputs.ref }}
           persist-credentials: false
-
-      - name: Check Skip CI
-        env:
-          COMMIT_MESSAGE: ${{ github.event.client_payload.message }}
-        run: |
-          if grep -q "noci" <<< "$COMMIT_MESSAGE"; then
-            echo "跳过构建: commit message 包含 'noci'"
-            exit 78
-          fi
 
       - name: Setup docker-compose
         uses: KengoTODA/actions-setup-docker-compose@b09fb2b902df45b91982bc46858188f2a714ee5f # v1

@@ -54,6 +54,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       TARGET_REGISTRY_HOST: ${{ inputs.site_variant == 'cn' && 'registry.cn-hongkong.aliyuncs.com' || secrets.DE_REGISTRY_HOST || 'registry.cn-hongkong.aliyuncs.com' }}
     outputs:

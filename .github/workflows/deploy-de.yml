@@ -44,6 +44,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     concurrency:
       group: deploy-de-${{ inputs.project }}-${{ inputs.env }}
       cancel-in-progress: false
