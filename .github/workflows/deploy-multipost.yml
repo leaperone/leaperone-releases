@@ -15,6 +15,7 @@ jobs:
       is_deployable: ${{ steps.resolve.outputs.is_deployable }}
       deploy_env: ${{ steps.resolve.outputs.deploy_env }}
       deploy_de: ${{ steps.resolve.outputs.deploy_de }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
       components: ${{ steps.resolve.outputs.components }}
       build_web: ${{ steps.resolve.outputs.build_web }}
       build_backend: ${{ steps.resolve.outputs.build_backend }}
@@ -22,10 +23,17 @@ jobs:
     steps:
       - name: Resolve deploy context
         id: resolve
+        env:
+          RAW_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
         run: |
           REF="${{ github.event.client_payload.ref }}"
           ENV_INPUT="${{ github.event.client_payload.env }}"
           COMPONENTS="${{ github.event.client_payload.components || github.event.client_payload.build_targets }}"
+
+          [[ "$RAW_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "ERROR: repository_dispatch source_sha must be a full lowercase Git SHA" >&2
+            exit 1
+          }
 
           DEPLOY_ENV="production"
           IS_DEPLOYABLE="true"
@@ -102,6 +110,7 @@ jobs:
           fi
 
           echo "ref=$RESOLVED_REF" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$RAW_SOURCE_SHA" >> "$GITHUB_OUTPUT"
           echo "pr_number=" >> "$GITHUB_OUTPUT"
           echo "is_deployable=$IS_DEPLOYABLE" >> "$GITHUB_OUTPUT"
           echo "deploy_env=$DEPLOY_ENV" >> "$GITHUB_OUTPUT"
@@ -113,12 +122,19 @@ jobs:
 
   build-and-push:
     needs: resolve-context
-    if: needs.resolve-context.outputs.is_deployable == 'true'
+    if: >-
+      needs.resolve-context.outputs.is_deployable == 'true' &&
+      !contains(github.event.client_payload.message || '', 'noci')
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: deploy-multipost-production
+      cancel-in-progress: false
     env:
       TARGET_REGISTRY_HOST: ${{ secrets.DE_REGISTRY_HOST || 'registry.cn-hongkong.aliyuncs.com' }}
     outputs:
       app_sha: ${{ steps.app-sha.outputs.sha }}
+      source_sha: ${{ steps.app-sha.outputs.source_sha }}
       sourcemap_bundle_key: ${{ steps.stage-sourcemaps.outputs.bundle_key }}
       component_digests: ${{ steps.push.outputs.component_digests }}
     steps:
@@ -127,14 +143,7 @@ jobs:
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/MultiPost
-          ref: ${{ needs.resolve-context.outputs.ref }}
-
-      - name: Check Skip CI
-        run: |
-          if grep -q "noci" <<< "${{ github.event.client_payload.message || '' }}"; then
-            echo "跳过构建: commit message 包含 'noci'"
-            exit 78
-          fi
+          ref: ${{ needs.resolve-context.outputs.source_sha }}
 
       - name: Setup docker-compose
         uses: KengoTODA/actions-setup-docker-compose@b09fb2b902df45b91982bc46858188f2a714ee5f # v1
@@ -150,7 +159,10 @@ jobs:
 
       - name: Compute app SHA
         id: app-sha
-        run: echo "sha=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
+        run: |
+          set -euo pipefail
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Validate telemetry inputs
         if: needs.resolve-context.outputs.build_web == 'true'
@@ -331,13 +343,17 @@ jobs:
     needs: [resolve-context, build-and-push]
     if: needs.resolve-context.outputs.is_deployable == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: deploy-multipost-production
+      cancel-in-progress: false
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/MultiPost
-          ref: ${{ needs.resolve-context.outputs.ref }}
+          ref: ${{ needs.build-and-push.outputs.source_sha }}
           fetch-depth: 0
 
       - name: Install Atlas Community
@@ -346,6 +362,26 @@ jobs:
           printf '%s  %s\n' 'a38e34e886cd0b9d2d625fe0046fed107785b1562bd2d07dbd96fadfc57dec62' /tmp/atlas | sha256sum -c -
           chmod +x /tmp/atlas
           sudo mv /tmp/atlas /usr/local/bin/atlas
+
+      - name: Resolve migration mode
+        id: migration
+        env:
+          REQUESTED_MODE: ${{ needs.resolve-context.outputs.migration_mode }}
+        run: |
+          set -euo pipefail
+          mode="$REQUESTED_MODE"
+          if [ "$mode" = "verify-only" ]; then
+            baseline="$(git describe --tags --match 'web-v*' --abbrev=0 HEAD^ 2>/dev/null || true)"
+            if [ -z "$baseline" ]; then
+              echo "ERROR: cannot resolve the prior Web release tag for migration safety" >&2
+              exit 1
+            fi
+            if ! git diff --quiet "$baseline" HEAD -- db; then
+              echo "Database files changed since $baseline; promoting this Web-only release to migration apply."
+              mode=apply
+            fi
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
       - name: Open DE Postgres SSH tunnel
         env:
@@ -371,7 +407,7 @@ jobs:
             "${DE_APP_USERNAME}@${DE_APP_HOST}"
 
       - name: Checkout web-only migration guard
-        if: needs.resolve-context.outputs.migration_mode == 'verify-only'
+        if: steps.migration.outputs.mode == 'verify-only'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: ${{ github.repository }}
@@ -380,7 +416,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify database unchanged (web-only)
-        if: needs.resolve-context.outputs.migration_mode == 'verify-only'
+        if: steps.migration.outputs.mode == 'verify-only'
         env:
           MULTIPOST_DATABASE_URL: ${{ secrets.MULTIPOST_DATABASE_URL }}
         run: |
@@ -388,7 +424,7 @@ jobs:
           python3 .release-automation/scripts/verify-multipost-no-migrations.py
 
       - name: Run database migrations (Atlas)
-        if: needs.resolve-context.outputs.migration_mode == 'apply'
+        if: steps.migration.outputs.mode == 'apply'
         env:
           MULTIPOST_DATABASE_URL: ${{ secrets.MULTIPOST_DATABASE_URL }}
         run: |
@@ -406,6 +442,9 @@ jobs:
   deploy-de:
     needs: [resolve-context, build-and-push, migrate-production]
     if: needs.resolve-context.outputs.is_deployable == 'true' && needs.resolve-context.outputs.deploy_de == 'true'
+    concurrency:
+      group: deploy-multipost-production
+      cancel-in-progress: false
     uses: ./.github/workflows/deploy-de.yml
     with:
       project: multipost

@@ -13,6 +13,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
       image_name: ${{ steps.publish.outputs.image_name }}

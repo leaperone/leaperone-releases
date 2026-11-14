@@ -27,7 +27,10 @@ function resolve(components, ref = 'main') {
     .replaceAll('${{ github.event.client_payload.env }}', 'production')
     .replaceAll('${{ github.event.client_payload.components || github.event.client_payload.build_targets }}', components);
   try {
-    const result = spawnSync('bash', ['-eu', '-c', script], { encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: output } });
+    const result = spawnSync('bash', ['-eu', '-c', script], {
+      encoding: 'utf8',
+      env: { ...process.env, RAW_SOURCE_SHA: 'a'.repeat(40), GITHUB_OUTPUT: output },
+    });
     return { ...result, outputs: result.status === 0 ? parseOutputs(readFileSync(output, 'utf8')) : {} };
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
@@ -90,13 +93,14 @@ test('deployment rejects retired selectors and digests before locks or Docker', 
 });
 
 const migrateJob = workflow.split('  migrate-production:\n')[1].split('\n  deploy-de:\n')[0];
-test('web-only migration path never runs atlas migrate apply', () => {
-  assert.ok(migrateJob.includes("migration_mode == 'verify-only'"));
+test('web-only releases promote to migration apply when db files changed', () => {
+  assert.ok(migrateJob.includes('Resolve migration mode'));
+  assert.ok(migrateJob.includes('git diff --quiet "$baseline" HEAD -- db'));
   assert.ok(migrateJob.includes('verify-multipost-no-migrations.py'));
   const verifyStep = migrateJob.split('- name: Verify database unchanged (web-only)')[1]?.split('- name: Run database migrations')[0] ?? '';
   assert.ok(verifyStep);
   assert.ok(!verifyStep.includes('migrate apply'));
   const applyStep = migrateJob.split('- name: Run database migrations (Atlas)')[1] ?? '';
-  assert.ok(applyStep.includes("migration_mode == 'apply'"));
+  assert.ok(applyStep.includes("steps.migration.outputs.mode == 'apply'"));
   assert.ok(applyStep.includes('atlas migrate apply'));
 });

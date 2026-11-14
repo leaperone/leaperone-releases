@@ -34,6 +34,7 @@ jobs:
       source_sha: ${{ steps.source-coordinate.outputs.source_sha }}
       app_sha: ${{ steps.source-coordinate.outputs.app_sha }}
       components: ${{ steps.set-ref.outputs.components }}
+      wait_for_web: ${{ steps.set-ref.outputs.wait_for_web }}
     steps:
       - name: Validate and set ref
         id: set-ref
@@ -59,12 +60,16 @@ jobs:
             COMPONENTS="backend"
           fi
           DEPLOY_BACKEND="false"
+          WAIT_FOR_WEB="false"
           IFS=',' read -ra COMPONENT_LIST <<< "$COMPONENTS"
           for component in "${COMPONENT_LIST[@]}"; do
             component="${component//[[:space:]]/}"
             case "$component" in
               backend|all)
                 DEPLOY_BACKEND="true"
+                if [ "$component" = "all" ]; then
+                  WAIT_FOR_WEB="true"
+                fi
                 ;;
               "")
                 ;;
@@ -78,7 +83,12 @@ jobs:
             echo "ERROR: no 2SOMEone backend component selected from: $COMPONENTS" >&2
             exit 1
           fi
+          if [ "$WAIT_FOR_WEB" = "true" ] && [ -z "$SOURCE_SHA" ]; then
+            echo "ERROR: components=all requires a full source_sha so backend can match the web migration run" >&2
+            exit 1
+          fi
           echo "components=backend" >> "$GITHUB_OUTPUT"
+          echo "wait_for_web=$WAIT_FOR_WEB" >> "$GITHUB_OUTPUT"
 
           # workflow_dispatch + env=production: only main or backend-v* tag
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "$DEPLOY_ENV" == "production" ]]; then
@@ -140,10 +150,13 @@ jobs:
 
   build-and-push:
     needs: prepare
-    if: needs.prepare.outputs.is_deployable == 'true'
+    if: >-
+      needs.prepare.outputs.is_deployable == 'true' &&
+      !contains(github.event.client_payload.message || '', 'noci')
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     concurrency:
-      group: deploy-twosomeone-backend-deployable
+      group: deploy-twosomeone-backend-deployable-${{ needs.prepare.outputs.deploy_env }}
       cancel-in-progress: false
     outputs:
       image_digest: ${{ steps.build-push.outputs.digest }}
@@ -154,13 +167,6 @@ jobs:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/2SOMEone
           ref: ${{ needs.prepare.outputs.source_sha }}
-
-      - name: Check Skip CI
-        run: |
-          if grep -q "noci" <<< "${{ github.event.client_payload.message || '' }}"; then
-            echo "skip build: commit message contains 'noci'"
-            exit 78
-          fi
 
       - name: Compute app SHA
         id: app-sha
@@ -219,19 +225,56 @@ jobs:
           cache-from: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:backend-twosomeone
           cache-to: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:backend-twosomeone,mode=max,ignore-error=true
 
-  # Wait for web's migrate job to finish so backend never boots against an un-migrated schema.
-  # Atlas-era migration is owned solely by web's deploy-twosomeone.yml; backend should not
-  # run migrations itself (single-owner principle, see 2SOMEone issue #344 follow-up).
+  # Backend-only releases do not need a web migration. Combined releases wait for
+  # the matching web workflow run to finish its dedicated migration job.
   await-migrate:
     needs: [prepare, build-and-push]
     if: needs.prepare.outputs.is_deployable == 'true'
     runs-on: ubuntu-latest
-    concurrency:
-      group: deploy-twosomeone-migrate
-      cancel-in-progress: false
+    timeout-minutes: 25
+    permissions:
+      actions: read
     steps:
-      - name: No-op (serialize against web's migrate job)
-        run: echo "Waited for deploy-twosomeone-migrate group. backend runtime schema check (apps/backend/src/index.ts) is the secondary safety net."
+      - name: Wait for the matching web migration
+        if: needs.prepare.outputs.wait_for_web == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+          DEPLOY_ENV: ${{ needs.prepare.outputs.deploy_env }}
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 20 * 60 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            matching="$(gh run list \
+              -R "$GITHUB_REPOSITORY" \
+              -w "Deploy 2SOMEone" \
+              -e repository_dispatch \
+              -L 100 \
+              --json databaseId,status,conclusion,displayTitle \
+              | jq \
+                --arg src "[src=$SOURCE_SHA]" \
+                --arg env_token "[env=$DEPLOY_ENV]" \
+                '[.[] | select(.displayTitle | contains($src)) | select(.displayTitle | contains($env_token))] | sort_by(.databaseId) | last')"
+            run_id="$(jq -r '.databaseId // empty' <<< "$matching")"
+            status="$(jq -r '.status // empty' <<< "$matching")"
+            conclusion="$(jq -r '.conclusion // empty' <<< "$matching")"
+            if [ -n "$run_id" ] && [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "Matching web run $run_id completed successfully; continuing backend deploy."
+                exit 0
+              fi
+              echo "ERROR: matching web run $run_id completed with conclusion=$conclusion" >&2
+              exit 1
+            fi
+            echo "Waiting for matching web migration run: run_id=${run_id:-none} status=${status:-none}"
+            sleep 20
+          done
+          echo "ERROR: timed out waiting for the matching web migration run" >&2
+          exit 1
+
+      - name: No-op for backend-only release
+        if: needs.prepare.outputs.wait_for_web != 'true'
+        run: echo "Backend-only release; no web migration run is expected."
 
   deploy-pve:
     needs: [prepare, build-and-push, await-migrate]

@@ -13,7 +13,9 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ !contains(github.event.client_payload.message || '', 'noci') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       TARGET_REGISTRY_HOST: ${{ secrets.DE_REGISTRY_HOST || 'registry.cn-hongkong.aliyuncs.com' }}
     outputs:
@@ -89,13 +91,6 @@ jobs:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/LEAPERone
           ref: ${{ steps.set-ref.outputs.ref }}
-
-      - name: Check Skip CI
-        run: |
-          if grep -q "noci" <<< "${{ github.event.client_payload.message || '' }}"; then
-            echo "跳过构建: commit message 包含 'noci'"
-            exit 78
-          fi
 
       - name: Validate checked out API source
         id: source
