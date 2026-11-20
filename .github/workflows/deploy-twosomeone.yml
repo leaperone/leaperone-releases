@@ -367,13 +367,16 @@ jobs:
           secrets: |
             next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
 
-      - name: Extract source maps from same buildkit cache
+      - name: Export source maps from same buildkit cache
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: apps/web/docker/Dockerfile
           target: sourcemaps
-          outputs: type=local,dest=./sourcemaps
+          # The local exporter can deadlock while streaming a large, file-heavy
+          # tree over the BuildKit session. A tar stream avoids that path.
+          outputs: type=tar,dest=./sourcemaps.tar
+          provenance: false
           build-args: |
             NEXT_PUBLIC_POSTHOG_KEY=${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
             NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
@@ -387,8 +390,10 @@ jobs:
           secrets: |
             next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
 
-      - name: Pack source maps (avoid colon-in-filename limitation)
-        run: tar -czf sourcemaps.tar -C ./sourcemaps/next .
+      - name: Validate source map bundle
+        run: |
+          test -s sourcemaps.tar
+          tar -tf sourcemaps.tar | grep -q '\.map$'
 
       - name: Checkout source map transport
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
