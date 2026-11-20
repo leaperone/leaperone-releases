@@ -394,6 +394,8 @@ jobs:
         run: |
           test -s sourcemaps.tar
           tar -tf sourcemaps.tar | grep -q '\.map$'
+          gzip -n -f sourcemaps.tar
+          mv sourcemaps.tar.gz sourcemaps.tar
 
       - name: Checkout source map transport
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
