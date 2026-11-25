@@ -4,6 +4,7 @@ Treat committed files, branches, pull requests, workflows, logs and artifacts as
 
 - Keep existing public release automation functional. New private product automation belongs in the owning private repository.
 - Production jobs use GitHub-hosted runners. Existing telemetry upload jobs may use the approved PVE runner.
+- 2SOMEone image builds may opt into the approved PVE build runner through a repository variable; the GitHub-hosted path must keep working as the fallback.
 - Read repository and runtime state before making changes. Preserve unrelated work.
 - Infrastructure values and credentials come from GitHub Secrets. Never commit server identifiers, paths, inventories, network topology or operational evidence.
 - Documentation uses placeholders such as <DEPLOY_HOST>, <PORT> and <REMOTE_PATH>.

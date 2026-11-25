@@ -31,6 +31,11 @@ on:
         type: string
         default: ""
         description: "Expected registry manifest digest"
+      local_image_tag:
+        required: false
+        type: string
+        default: ""
+        description: "Image tag built on the PVE build runner; when set, the PVE deployment pulls it from the PVE_LOCAL_REGISTRY secret"
 
 jobs:
   deploy:
@@ -78,13 +83,15 @@ jobs:
           RELEASES_SHA: ${{ github.sha }}
           ALIYUN_DOCKER_USERNAME: ${{ inputs.project == 'leaperone-www-cn' && secrets.ALIYUN_DOCKER_USERNAME || '' }}
           ALIYUN_DOCKER_PASSWORD: ${{ inputs.project == 'leaperone-www-cn' && secrets.ALIYUN_DOCKER_PASSWORD || '' }}
+          LOCAL_IMAGE_TAG: ${{ inputs.local_image_tag }}
+          LOCAL_REGISTRY: ${{ inputs.local_image_tag != '' && secrets.PVE_LOCAL_REGISTRY || '' }}
         with:
           host: ${{ inputs.internal && secrets.PVE_APP_HOST_INTERNAL || secrets.PVE_APP_HOST }}
           username: ${{ secrets.PVE_APP_USERNAME }}
           key: ${{ secrets.PVE_APP_SSH_KEY }}
           port: ${{ inputs.internal && secrets.PVE_APP_PORT_INTERNAL || secrets.PVE_APP_PORT }}
           command_timeout: 20m
-          envs: APP_DEPLOY_ROOT,DEPLOY_STATE_ROOT,IMAGE_SOURCE_SHA,IMAGE_REF,IMAGE_DIGEST,RELEASES_SHA,ALIYUN_DOCKER_USERNAME,ALIYUN_DOCKER_PASSWORD
+          envs: APP_DEPLOY_ROOT,DEPLOY_STATE_ROOT,IMAGE_SOURCE_SHA,IMAGE_REF,IMAGE_DIGEST,RELEASES_SHA,ALIYUN_DOCKER_USERNAME,ALIYUN_DOCKER_PASSWORD,LOCAL_IMAGE_TAG,LOCAL_REGISTRY
           script: |
             set -euo pipefail
             PROJECT="${{ inputs.project }}"
@@ -170,7 +177,31 @@ jobs:
                   echo "ERROR: immutable image inputs are unsupported for this project" >&2
                   exit 1
                 fi
+                if [ -n "${LOCAL_IMAGE_TAG:-}" ]; then
+                  # Images built on the PVE build runner are pulled from the local
+                  # registry; compose gives these shell values precedence over .env.
+                  case "$PROJECT" in
+                    twosomeone) local_tag_pattern='^web-[0-9a-f]{7}$' ;;
+                    twosomeone-backend) local_tag_pattern='^backend-[0-9a-f]{7}$' ;;
+                    *)
+                      echo "ERROR: local registry images are unsupported for this project" >&2
+                      exit 1
+                      ;;
+                  esac
+                  [[ "$LOCAL_IMAGE_TAG" =~ $local_tag_pattern ]] || {
+                    echo "ERROR: invalid local image tag" >&2
+                    exit 1
+                  }
+                  [[ "${LOCAL_REGISTRY:-}" =~ ^[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || {
+                    echo "ERROR: PVE_LOCAL_REGISTRY must be host[:port]" >&2
+                    exit 1
+                  }
+                  export REGISTRY_HOST="$LOCAL_REGISTRY"
+                  export IMAGE_TAG="$LOCAL_IMAGE_TAG"
+                  echo "==> Using PVE-built image tag ${IMAGE_TAG} from the local registry"
+                fi
                 ;;
             esac
+            unset LOCAL_IMAGE_TAG LOCAL_REGISTRY
 
             bash "$TOOL_DIR/deploy.sh" "$PROJECT" "$DEPLOY_ENV"
