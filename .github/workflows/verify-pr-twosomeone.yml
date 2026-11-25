@@ -71,7 +71,9 @@ jobs:
 
   verify-pr:
     needs: prepare
-    runs-on: ubuntu-latest
+    # PR verification may run on the PVE build runner (repository variable
+    # TWOSOMEONE_VERIFY_ON_PVE=true) where BuildKit cache stays warm.
+    runs-on: ${{ (vars.TWOSOMEONE_VERIFY_ON_PVE == 'true') && fromJSON('["self-hosted","Linux","X64","pve-build"]') || 'ubuntu-latest' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -83,8 +85,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
-          # Keep verification on the same BuildKit version as deploy builds.
-          driver-opts: image=moby/buildkit:v0.31.2
+          # Keep verification on the same BuildKit as deploy builds: the Docker daemon's
+          # BuildKit on the PVE runner, the pinned BuildKit on GitHub-hosted runners.
+          driver: ${{ runner.environment == 'self-hosted' && 'docker' || 'docker-container' }}
+          driver-opts: ${{ runner.environment != 'self-hosted' && 'image=moby/buildkit:v0.31.2' || '' }}
 
       - name: Build (non-deployable verification)
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
@@ -95,8 +99,8 @@ jobs:
           push: false
           load: false
           tags: 2someren:web-pr-verify
-          cache-from: type=gha,scope=web-twosomeone-pr
-          cache-to: type=gha,scope=web-twosomeone-pr,mode=max
+          cache-from: ${{ runner.environment != 'self-hosted' && 'type=gha,scope=web-twosomeone-pr' || '' }}
+          cache-to: ${{ runner.environment != 'self-hosted' && 'type=gha,scope=web-twosomeone-pr,mode=max' || '' }}
           build-args: |
             NEXT_PUBLIC_POSTHOG_KEY=${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
             NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one

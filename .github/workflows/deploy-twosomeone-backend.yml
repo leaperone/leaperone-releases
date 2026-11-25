@@ -153,13 +153,16 @@ jobs:
     if: >-
       needs.prepare.outputs.is_deployable == 'true' &&
       !contains(github.event.client_payload.message || '', 'noci')
-    runs-on: ubuntu-latest
+    # Backend images may be built on the PVE build runner (repository variable
+    # TWOSOMEONE_BACKEND_BUILD_ON_PVE=true); otherwise they stay GitHub-hosted.
+    runs-on: ${{ (vars.TWOSOMEONE_BACKEND_BUILD_ON_PVE == 'true') && fromJSON('["self-hosted","Linux","X64","pve-build"]') || 'ubuntu-latest' }}
     timeout-minutes: 30
     concurrency:
       group: deploy-twosomeone-backend-deployable-${{ needs.prepare.outputs.deploy_env }}
       cancel-in-progress: false
     outputs:
       image_digest: ${{ steps.build-push.outputs.digest }}
+      local_image_tag: ${{ steps.runner-mode.outputs.local_image_tag }}
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -181,6 +184,25 @@ jobs:
           }
           echo "sha=$app_sha" >> "$GITHUB_OUTPUT"
 
+      - name: Detect build runner
+        id: runner-mode
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+          APP_SHA: ${{ steps.app-sha.outputs.sha }}
+          LOCAL_REGISTRY: ${{ secrets.PVE_LOCAL_REGISTRY }}
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_KIND" = "self-hosted" ]; then
+            [[ "$LOCAL_REGISTRY" =~ ^[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || {
+              echo "ERROR: PVE_LOCAL_REGISTRY must be host[:port] on the PVE build runner" >&2
+              exit 1
+            }
+            echo "pve=true" >> "$GITHUB_OUTPUT"
+            echo "local_image_tag=backend-${APP_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "pve=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Login to Aliyun Docker Registry (Shanghai)
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
@@ -191,11 +213,16 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
-          # BuildKit 0.32 defaults attestations to OCI artifacts, which Aliyun ACR rejects.
-          driver-opts: image=moby/buildkit:v0.31.2
+          # The PVE runner reuses the Docker daemon's BuildKit so layer and cache-mount
+          # state persists between builds. GitHub-hosted builds pin BuildKit because
+          # 0.32 defaults attestations to OCI artifacts, which Aliyun ACR rejects.
+          driver: ${{ steps.runner-mode.outputs.pve == 'true' && 'docker' || 'docker-container' }}
+          driver-opts: ${{ steps.runner-mode.outputs.pve != 'true' && 'image=moby/buildkit:v0.31.2' || '' }}
 
       - name: Compute Docker tags
         id: docker-tags
+        env:
+          LOCAL_REGISTRY: ${{ steps.runner-mode.outputs.pve == 'true' && secrets.PVE_LOCAL_REGISTRY || '' }}
         run: |
           APP_SHA="${{ steps.app-sha.outputs.sha }}"
           IS_TAG="${{ needs.prepare.outputs.is_tag }}"
@@ -207,6 +234,11 @@ jobs:
           if [ "$IS_TAG" == "true" ]; then
             TAG_NAME="${REF#refs/tags/}"
             TAGS+="registry.cn-shanghai.aliyuncs.com/leaperone/2someren:${TAG_NAME}"$'\n'
+          fi
+          if [ -n "$LOCAL_REGISTRY" ]; then
+            # PVE builds also feed the local registry used by the PVE deployment.
+            TAGS+="${LOCAL_REGISTRY}/leaperone/2someren:backend-main-latest"$'\n'
+            TAGS+="${LOCAL_REGISTRY}/leaperone/2someren:backend-${APP_SHA}"$'\n'
           fi
           {
             echo "tags<<EOF"
@@ -222,8 +254,10 @@ jobs:
           file: apps/backend/docker/Dockerfile
           push: true
           tags: ${{ steps.docker-tags.outputs.tags }}
-          cache-from: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:backend-twosomeone
-          cache-to: type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:backend-twosomeone,mode=max,ignore-error=true
+          # PVE builds keep layers in the runner's BuildKit; the registry cache would
+          # move every layer over the PVE uplink.
+          cache-from: ${{ steps.runner-mode.outputs.pve != 'true' && 'type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:backend-twosomeone' || '' }}
+          cache-to: ${{ steps.runner-mode.outputs.pve != 'true' && 'type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:backend-twosomeone,mode=max,ignore-error=true' || '' }}
 
   # Backend-only releases do not need a web migration. Combined releases wait for
   # the matching web workflow run to finish its dedicated migration job.
@@ -284,6 +318,7 @@ jobs:
       project: twosomeone-backend
       env: ${{ needs.prepare.outputs.deploy_env }}
       internal: false
+      local_image_tag: ${{ needs.build-and-push.outputs.local_image_tag }}
     secrets: inherit
 
   private-release-hook:
