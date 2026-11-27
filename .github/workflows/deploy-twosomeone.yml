@@ -237,10 +237,10 @@ jobs:
       # once admitted so a release cannot be replaced halfway through a push.
       cancel-in-progress: ${{ needs.prepare.outputs.deploy_env == 'beta' }}
     outputs:
-      image_digest: ${{ steps.build-push.outputs.digest }}
+      image_digest: ${{ steps.runner-mode.outputs.pve == 'true' && steps.local-push.outputs.digest || steps.build-push.outputs.digest }}
       sourcemap_bundle_key: ${{ steps.sourcemaps.outputs.bundle_key }}
-      sourcemaps_uploaded: ${{ steps.local-sourcemaps.outputs.uploaded }}
       local_image_tag: ${{ steps.runner-mode.outputs.local_image_tag }}
+      on_pve: ${{ steps.runner-mode.outputs.pve }}
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -383,6 +383,9 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # PVE builds load the image into the shared Docker daemon and push only to the
+      # local registry here, so the PVE deployment starts right away; push-aliyun
+      # copies the same image to ACR for Shanghai and overseas in parallel.
       - name: Build and Push (deployable)
         id: build-push
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
@@ -390,8 +393,8 @@ jobs:
           context: .
           file: apps/web/docker/Dockerfile
           target: final
-          push: true
-          load: false
+          push: ${{ steps.runner-mode.outputs.pve != 'true' }}
+          load: ${{ steps.runner-mode.outputs.pve == 'true' }}
           tags: ${{ steps.docker-tags.outputs.tags }}
           # PVE builds keep layers in the runner's BuildKit; exporting to the GitHub
           # cache would push every layer over the PVE uplink.
@@ -410,7 +413,31 @@ jobs:
           secrets: |
             next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
 
+      - name: Push to local registry (PVE)
+        id: local-push
+        if: steps.runner-mode.outputs.pve == 'true'
+        env:
+          LOCAL_REGISTRY: ${{ secrets.PVE_LOCAL_REGISTRY }}
+          APP_SHA: ${{ steps.app-sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          repo="${LOCAL_REGISTRY}/leaperone/2someren"
+          docker push --quiet "${repo}:web-${APP_SHA}"
+          docker push --quiet "${repo}:web-main-latest"
+          digest="$(curl -fsSI \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "http://${LOCAL_REGISTRY}/v2/leaperone/2someren/manifests/web-${APP_SHA}" \
+            | awk 'tolower($1) == "docker-content-digest:" { print $2 }' | tr -d '\r')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "ERROR: could not read the local registry digest" >&2
+            exit 1
+          }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      # GitHub-hosted builds export source maps here and hand them to the DE spool;
+      # PVE builds export them in the parallel sourcemaps-pve job instead.
       - name: Export source maps from same buildkit cache
+        if: steps.runner-mode.outputs.pve != 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -434,19 +461,15 @@ jobs:
             next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
 
       - name: Validate source map bundle
-        env:
-          ON_PVE: ${{ steps.runner-mode.outputs.pve }}
+        if: steps.runner-mode.outputs.pve != 'true'
         run: |
           test -s sourcemaps.tar
           tar -tf sourcemaps.tar | grep -q '\.map$'
-          # Only the DE spool transfer benefits from compression; the PVE build
-          # uploads to Sentry locally and extracts the plain tar directly.
-          if [ "$ON_PVE" != "true" ]; then
-            gzip -n -f sourcemaps.tar
-            mv sourcemaps.tar.gz sourcemaps.tar
-          fi
+          gzip -n -f sourcemaps.tar
+          mv sourcemaps.tar.gz sourcemaps.tar
 
       - name: Checkout source map transport
+        if: steps.runner-mode.outputs.pve != 'true'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: ${{ github.repository }}
@@ -468,14 +491,120 @@ jobs:
           .release-automation/scripts/stage-sourcemap-bundle.sh sourcemaps.tar "$BUNDLE_KEY"
           echo "bundle_key=$BUNDLE_KEY" >> "$GITHUB_OUTPUT"
 
-      # Sentry runs next to the PVE build runner, so PVE builds upload the exact-build
-      # bundle directly instead of round-tripping it through the DE spool.
+
+  # Copies the exact PVE build to ACR for Shanghai, overseas and the cold-standby
+  # hook. It runs alongside migrate/deploy-pve; only the non-PVE targets wait for it.
+  push-aliyun:
+    needs: [prepare, build-and-push]
+    if: needs.build-and-push.outputs.on_pve == 'true'
+    runs-on: ${{ (needs.build-and-push.outputs.on_pve == 'true') && fromJSON('["self-hosted","Linux","X64","pve-build"]') || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    outputs:
+      image_digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Login to Aliyun Docker Registry (Shanghai)
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: registry.cn-shanghai.aliyuncs.com
+          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+
+      - name: Push exact PVE build to Aliyun Shanghai
+        id: push
+        env:
+          APP_SHA: ${{ needs.prepare.outputs.app_sha }}
+          LOCAL_DIGEST: ${{ needs.build-and-push.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          repo="registry.cn-shanghai.aliyuncs.com/leaperone/2someren"
+          # The build job loaded this tag into the Docker daemon shared by all PVE build runners.
+          docker image inspect "${repo}:web-${APP_SHA}" >/dev/null
+          docker push --quiet "${repo}:web-${APP_SHA}"
+          docker tag "${repo}:web-${APP_SHA}" "${repo}:web-main-latest"
+          docker push --quiet "${repo}:web-main-latest"
+          digest="sha256:$(docker buildx imagetools inspect --raw "${repo}:web-${APP_SHA}" | sha256sum | cut -d' ' -f1)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "ERROR: could not read the ACR digest" >&2
+            exit 1
+          }
+          if [ "$digest" != "$LOCAL_DIGEST" ]; then
+            echo "::warning::ACR digest $digest differs from the local registry digest $LOCAL_DIGEST"
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+  # PVE builds export and upload source maps in parallel; no deployment waits for it.
+  sourcemaps-pve:
+    needs: [prepare, build-and-push]
+    if: needs.build-and-push.outputs.on_pve == 'true'
+    runs-on: ${{ (needs.build-and-push.outputs.on_pve == 'true') && fromJSON('["self-hosted","Linux","X64","pve-build"]') || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/2SOMEone
+          ref: ${{ needs.prepare.outputs.source_sha || needs.prepare.outputs.ref }}
+          fetch-depth: ${{ runner.environment == 'self-hosted' && '0' || '1' }}
+
+      - name: Verify source coordinate
+        env:
+          EXPECTED_APP_SHA: ${{ needs.prepare.outputs.app_sha }}
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse --short=7 HEAD)" = "$EXPECTED_APP_SHA" ] || {
+            echo "ERROR: source map checkout SHA does not match prepare job coordinate" >&2
+            exit 1
+          }
+
+      - name: Set Sentry release
+        id: sentry
+        run: echo "release=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker
+
+      # Same build args and secret as the deployable build, so BuildKit reuses its
+      # cache on the shared daemon instead of compiling again.
+      - name: Export source maps from same buildkit cache
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: apps/web/docker/Dockerfile
+          target: sourcemaps
+          outputs: type=tar,dest=./sourcemaps.tar
+          provenance: false
+          build-args: |
+            NEXT_PUBLIC_POSTHOG_KEY=${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
+            NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
+            NEXT_PUBLIC_SENTRY_DSN=${{ vars.TWOSOMEONE_SENTRY_DSN }}
+            NEXT_PUBLIC_ALIYUN_CAPTCHA_APP_ID=f8dacc7f8c6e0585d3e2d86a937181e5
+            SENTRY_URL=${{ secrets.SENTRY_INTERNAL_URL }}
+            SENTRY_ORG=leaperone
+            SENTRY_PROJECT=2someone-web
+            SENTRY_ENVIRONMENT=${{ needs.prepare.outputs.deploy_env }}
+            SENTRY_RELEASE=2someone-web@${{ steps.sentry.outputs.release }}
+          secrets: |
+            next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
+
+      - name: Validate source map bundle
+        run: |
+          test -s sourcemaps.tar
+          tar -tf sourcemaps.tar | grep -q '\.map$'
+
+      - name: Checkout source map transport
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: .release-automation
+          persist-credentials: false
+
+      # Sentry runs next to the PVE build runners, so the bundle is uploaded directly.
       - name: Upload exact-build source maps to Sentry from PVE
         id: local-sourcemaps
-        if: steps.runner-mode.outputs.pve == 'true'
-        # Source map upload never blocks a deployment; on failure the upload-sourcemaps
-        # job still runs and reports the missing bundle.
-        continue-on-error: true
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_URL: ${{ secrets.SENTRY_INTERNAL_URL }}
@@ -501,7 +630,6 @@ jobs:
           sentry-cli sourcemaps upload --release "$SENTRY_RELEASE_NAME" "$work_dir/files"
           sentry-cli releases finalize "$SENTRY_RELEASE_NAME"
           echo "uploaded=true" >> "$GITHUB_OUTPUT"
-
 
   migrate:
     needs: [prepare, build-and-push]
@@ -733,7 +861,7 @@ jobs:
     needs: [prepare, build-and-push]
     if: >-
       needs.prepare.outputs.is_deployable == 'true' &&
-      needs.build-and-push.outputs.sourcemaps_uploaded != 'true'
+      needs.build-and-push.outputs.on_pve != 'true'
     uses: ./.github/workflows/upload-telemetry-sourcemaps.yml
     with:
       bundle_key: ${{ needs.build-and-push.outputs.sourcemap_bundle_key }}
@@ -760,7 +888,7 @@ jobs:
 
   # Cold standby staging can be paused with TWOSOMEONE_COLD_STANDBY_STAGING=false.
   private-release-hook:
-    needs: [prepare, build-and-push, drift-check, deploy-pve]
+    needs: [prepare, build-and-push, drift-check, deploy-pve, push-aliyun]
     if: >-
       always() &&
       vars.TWOSOMEONE_COLD_STANDBY_STAGING != 'false' &&
@@ -768,13 +896,14 @@ jobs:
       needs.prepare.outputs.deploy_env == 'production' &&
       needs.build-and-push.result == 'success' &&
       needs.deploy-pve.result == 'success' &&
-      (needs.drift-check.result == 'success' || needs.drift-check.result == 'skipped')
+      (needs.drift-check.result == 'success' || needs.drift-check.result == 'skipped') &&
+      (needs.push-aliyun.result == 'success' || needs.push-aliyun.result == 'skipped')
     uses: ./.github/workflows/private-release-hook.yml
     with:
       artifact: web
       source_sha: ${{ needs.prepare.outputs.source_sha }}
       image_ref: >-
-        registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-${{ needs.prepare.outputs.app_sha }}@${{ needs.build-and-push.outputs.image_digest }}
+        registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-${{ needs.prepare.outputs.app_sha }}@${{ needs.push-aliyun.outputs.image_digest || needs.build-and-push.outputs.image_digest }}
       release_run_id: ${{ github.run_id }}
     secrets:
       dispatch_repository: ${{ secrets.PRIVATE_RELEASE_REPOSITORY }}
@@ -805,8 +934,15 @@ jobs:
             "$DEPLOY_SCRIPT" "$DEPLOY_ENV" "$IMAGE_REF"
 
   deploy-shanghai:
-    needs: [prepare, build-and-push, drift-check]
-    if: needs.prepare.outputs.is_tag == 'true'
+    needs: [prepare, build-and-push, drift-check, push-aliyun]
+    # Shanghai and overseas follow the ACR copy asynchronously; push-aliyun is
+    # skipped for GitHub-hosted builds, which push to ACR themselves.
+    if: >-
+      !cancelled() &&
+      needs.prepare.outputs.is_tag == 'true' &&
+      needs.build-and-push.result == 'success' &&
+      needs.drift-check.result == 'success' &&
+      (needs.push-aliyun.result == 'success' || needs.push-aliyun.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to Production (Shanghai)
@@ -820,14 +956,21 @@ jobs:
           script: ${{ secrets.DEPLOY_TWOSOMEREN_SCRIPT }}
 
   deploy-overseas:
-    needs: [prepare, build-and-push, drift-check]
-    if: needs.prepare.outputs.is_tag == 'true'
+    needs: [prepare, build-and-push, drift-check, push-aliyun]
+    # Shanghai and overseas follow the ACR copy asynchronously; push-aliyun is
+    # skipped for GitHub-hosted builds, which push to ACR themselves.
+    if: >-
+      !cancelled() &&
+      needs.prepare.outputs.is_tag == 'true' &&
+      needs.build-and-push.result == 'success' &&
+      needs.drift-check.result == 'success' &&
+      (needs.push-aliyun.result == 'success' || needs.push-aliyun.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to Production (Overseas)
         uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799 # v1.0.0
         env:
-          IMAGE_REF: registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-${{ needs.prepare.outputs.app_sha }}@${{ needs.build-and-push.outputs.image_digest }}
+          IMAGE_REF: registry.cn-shanghai.aliyuncs.com/leaperone/2someren:web-${{ needs.prepare.outputs.app_sha }}@${{ needs.push-aliyun.outputs.image_digest || needs.build-and-push.outputs.image_digest }}
           DEPLOY_ENV: production
           DEPLOY_SCRIPT: ${{ secrets.TWOSOMEONE_OVERSEAS_DEPLOY_SCRIPT }}
         with:
