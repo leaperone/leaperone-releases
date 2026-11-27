@@ -23,9 +23,10 @@ jobs:
     steps:
       - name: Resolve PR ref
         id: set-ref
+        env:
+          PR_INPUT: ${{ inputs.pr || github.event.client_payload.pr || github.event.client_payload.pr_number }}
+          REF: ${{ inputs.ref || github.event.client_payload.ref }}
         run: |
-          PR_INPUT="${{ inputs.pr || github.event.client_payload.pr || github.event.client_payload.pr_number }}"
-          REF="${{ inputs.ref || github.event.client_payload.ref }}"
           PR_NUMBER=""
 
           if [ -n "$PR_INPUT" ]; then
@@ -98,10 +99,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Lint and typecheck affected packages
+      # HEAD^1 is the base side of refs/pull/<n>/merge.
+      - name: Lint affected packages
         env:
           TURBO_SCM_BASE: HEAD^1
           TURBO_SCM_HEAD: HEAD
-        run: |
-          pnpm turbo run check --affected --filter='!2someone-desktop'
-          pnpm -r --filter='...[HEAD^1]' --filter='!2someone-desktop' --if-present run typecheck
+        run: pnpm turbo run check --affected
+
+      - name: Typecheck affected packages
+        if: ${{ !cancelled() }}
+        run: pnpm -r --filter='...[HEAD^1]' --if-present run typecheck
