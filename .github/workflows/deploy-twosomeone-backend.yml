@@ -170,6 +170,9 @@ jobs:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/2SOMEone
           ref: ${{ needs.prepare.outputs.source_sha }}
+          # Persistent PVE workspaces fetch only new history; a depth-1 fetch would
+          # resend the whole tree over the narrow uplink on every build.
+          fetch-depth: ${{ runner.environment == 'self-hosted' && '0' || '1' }}
 
       - name: Compute app SHA
         id: app-sha

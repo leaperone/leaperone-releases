@@ -248,6 +248,9 @@ jobs:
           token: ${{ secrets.ACCESS_TOKEN }}
           repository: leaperone/2SOMEone
           ref: ${{ needs.prepare.outputs.source_sha || needs.prepare.outputs.ref }}
+          # Persistent PVE workspaces fetch only new history; a depth-1 fetch would
+          # resend the whole tree over the narrow uplink on every build.
+          fetch-depth: ${{ runner.environment == 'self-hosted' && '0' || '1' }}
 
       - name: Compute app SHA
         id: app-sha
@@ -431,11 +434,17 @@ jobs:
             next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
 
       - name: Validate source map bundle
+        env:
+          ON_PVE: ${{ steps.runner-mode.outputs.pve }}
         run: |
           test -s sourcemaps.tar
           tar -tf sourcemaps.tar | grep -q '\.map$'
-          gzip -n -f sourcemaps.tar
-          mv sourcemaps.tar.gz sourcemaps.tar
+          # Only the DE spool transfer benefits from compression; the PVE build
+          # uploads to Sentry locally and extracts the plain tar directly.
+          if [ "$ON_PVE" != "true" ]; then
+            gzip -n -f sourcemaps.tar
+            mv sourcemaps.tar.gz sourcemaps.tar
+          fi
 
       - name: Checkout source map transport
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
