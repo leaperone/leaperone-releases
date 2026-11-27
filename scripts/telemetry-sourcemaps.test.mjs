@@ -90,7 +90,7 @@ for (const stage of ["create", "upload", "finalize"]) {
 test("reusable workflow and all callers omit PostHog upload inputs", async () => {
   const workflow = await readFile(join(root, ".github/workflows/upload-telemetry-sourcemaps.yml"), "utf8");
   assert.doesNotMatch(workflow, /posthog|POSTHOG|upload-posthog-sourcemaps|@posthog\/cli/);
-  for (const caller of ["deploy-twosomeone.yml", "deploy-twssomeren.yml", "deploy-multipost.yml", "deploy-leaperone-frontend.yml"]) {
+  for (const caller of ["deploy-twosomeone.yml", "deploy-multipost.yml", "deploy-leaperone-frontend.yml"]) {
     const source = await readFile(join(root, ".github/workflows", caller), "utf8");
     const start = source.indexOf("  upload-sourcemaps:\n");
     assert(start >= 0, `${caller} must retain the Sentry upload job`);
