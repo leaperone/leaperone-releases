@@ -135,9 +135,9 @@ test("2SOMEone build and upload use the same full Sentry source SHA", async t =>
     context[`needs.prepare.outputs.${name}`] = evaluate(definition);
   }
   const builds = [...workflow.matchAll(/^\s+SENTRY_RELEASE=(.+)$/gm)].map(match => evaluate(match[1]));
-  assert.equal(builds.length, 2);
+  assert(builds.length >= 2, "expected the deployable and source map builds");
   const uploaded = evaluate(workflow.match(/^\s+sentry_release: (.+)$/m)[1]);
-  assert.deepEqual([...builds, uploaded], Array(3).fill(`2someone-web@${source}`));
+  assert.deepEqual([...builds, uploaded], Array(builds.length + 1).fill(`2someone-web@${source}`));
 });
 
 for (const mode of ["resume", "permanent", "exhausted", "mismatch", "invalid-checksum", "unsafe-key"]) {

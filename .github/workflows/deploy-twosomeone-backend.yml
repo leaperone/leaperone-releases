@@ -161,8 +161,9 @@ jobs:
       group: deploy-twosomeone-backend-deployable-${{ needs.prepare.outputs.deploy_env }}
       cancel-in-progress: false
     outputs:
-      image_digest: ${{ steps.build-push.outputs.digest }}
+      image_digest: ${{ steps.runner-mode.outputs.pve == 'true' && steps.local-push.outputs.digest || steps.build-push.outputs.digest }}
       local_image_tag: ${{ steps.runner-mode.outputs.local_image_tag }}
+      on_pve: ${{ steps.runner-mode.outputs.pve }}
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -249,18 +250,95 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # PVE builds load the image into the shared Docker daemon and push only to the
+      # local registry here, so the PVE deployment starts right away; push-aliyun
+      # copies the same image to ACR in parallel.
       - name: Build and Push
         id: build-push
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: apps/backend/docker/Dockerfile
-          push: true
+          push: ${{ steps.runner-mode.outputs.pve != 'true' }}
+          load: ${{ steps.runner-mode.outputs.pve == 'true' }}
           tags: ${{ steps.docker-tags.outputs.tags }}
           # PVE builds keep layers in the runner's BuildKit; the registry cache would
           # move every layer over the PVE uplink.
           cache-from: ${{ steps.runner-mode.outputs.pve != 'true' && 'type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:backend-twosomeone' || '' }}
           cache-to: ${{ steps.runner-mode.outputs.pve != 'true' && 'type=registry,ref=registry.cn-shanghai.aliyuncs.com/leaperone/buildcache:backend-twosomeone,mode=max,ignore-error=true' || '' }}
+
+      - name: Push to local registry (PVE)
+        id: local-push
+        if: steps.runner-mode.outputs.pve == 'true'
+        env:
+          LOCAL_REGISTRY: ${{ secrets.PVE_LOCAL_REGISTRY }}
+          APP_SHA: ${{ steps.app-sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          repo="${LOCAL_REGISTRY}/leaperone/2someren"
+          docker push --quiet "${repo}:backend-${APP_SHA}"
+          docker push --quiet "${repo}:backend-main-latest"
+          digest="$(curl -fsSI \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "http://${LOCAL_REGISTRY}/v2/leaperone/2someren/manifests/backend-${APP_SHA}" \
+            | awk 'tolower($1) == "docker-content-digest:" { print $2 }' | tr -d '\r')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "ERROR: could not read the local registry digest" >&2
+            exit 1
+          }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+  # Copies the exact PVE build to ACR (used by the cold-standby hook) without
+  # holding up the PVE deployment.
+  push-aliyun:
+    needs: [prepare, build-and-push]
+    if: needs.build-and-push.outputs.on_pve == 'true'
+    runs-on: ${{ (needs.build-and-push.outputs.on_pve == 'true') && fromJSON('["self-hosted","Linux","X64","pve-build"]') || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    outputs:
+      image_digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Login to Aliyun Docker Registry (Shanghai)
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: registry.cn-shanghai.aliyuncs.com
+          username: ${{ secrets.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+
+      - name: Push exact PVE build to Aliyun Shanghai
+        id: push
+        env:
+          APP_SHA: ${{ needs.prepare.outputs.app_sha }}
+          IS_TAG: ${{ needs.prepare.outputs.is_tag }}
+          REF: ${{ needs.prepare.outputs.ref }}
+          LOCAL_DIGEST: ${{ needs.build-and-push.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          repo="registry.cn-shanghai.aliyuncs.com/leaperone/2someren"
+          src="${repo}:backend-${APP_SHA}"
+          # The build job loaded this tag into the Docker daemon shared by all PVE build runners.
+          docker image inspect "$src" >/dev/null
+          docker push --quiet "$src"
+          docker tag "$src" "${repo}:backend-main-latest"
+          docker push --quiet "${repo}:backend-main-latest"
+          if [ "$IS_TAG" = "true" ]; then
+            tag_name="${REF#refs/tags/}"
+            [[ "$tag_name" =~ ^backend-v[0-9A-Za-z.+-]+$ ]] || {
+              echo "ERROR: unexpected release tag name" >&2
+              exit 1
+            }
+            docker tag "$src" "${repo}:${tag_name}"
+            docker push --quiet "${repo}:${tag_name}"
+          fi
+          digest="sha256:$(docker buildx imagetools inspect --raw "$src" | sha256sum | cut -d' ' -f1)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "ERROR: could not read the ACR digest" >&2
+            exit 1
+          }
+          if [ "$digest" != "$LOCAL_DIGEST" ]; then
+            echo "::warning::ACR digest $digest differs from the local registry digest $LOCAL_DIGEST"
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
   # Backend-only releases do not need a web migration. Combined releases wait for
   # the matching web workflow run to finish its dedicated migration job.
@@ -326,7 +404,7 @@ jobs:
 
   # Cold standby staging can be paused with TWOSOMEONE_COLD_STANDBY_STAGING=false.
   private-release-hook:
-    needs: [prepare, build-and-push, await-migrate, deploy-pve]
+    needs: [prepare, build-and-push, await-migrate, deploy-pve, push-aliyun]
     if: >-
       always() &&
       vars.TWOSOMEONE_COLD_STANDBY_STAGING != 'false' &&
@@ -334,13 +412,14 @@ jobs:
       needs.prepare.outputs.deploy_env == 'production' &&
       needs.build-and-push.result == 'success' &&
       needs.await-migrate.result == 'success' &&
-      needs.deploy-pve.result == 'success'
+      needs.deploy-pve.result == 'success' &&
+      (needs.push-aliyun.result == 'success' || needs.push-aliyun.result == 'skipped')
     uses: ./.github/workflows/private-release-hook.yml
     with:
       artifact: backend
       source_sha: ${{ needs.prepare.outputs.source_sha }}
       image_ref: >-
-        registry.cn-shanghai.aliyuncs.com/leaperone/2someren:backend-${{ needs.prepare.outputs.app_sha }}@${{ needs.build-and-push.outputs.image_digest }}
+        registry.cn-shanghai.aliyuncs.com/leaperone/2someren:backend-${{ needs.prepare.outputs.app_sha }}@${{ needs.push-aliyun.outputs.image_digest || needs.build-and-push.outputs.image_digest }}
       release_run_id: ${{ github.run_id }}
     secrets:
       dispatch_repository: ${{ secrets.PRIVATE_RELEASE_REPOSITORY }}
