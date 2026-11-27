@@ -324,10 +324,12 @@ jobs:
       local_image_tag: ${{ needs.build-and-push.outputs.local_image_tag }}
     secrets: inherit
 
+  # Cold standby staging can be paused with TWOSOMEONE_COLD_STANDBY_STAGING=false.
   private-release-hook:
     needs: [prepare, build-and-push, await-migrate, deploy-pve]
     if: >-
       always() &&
+      vars.TWOSOMEONE_COLD_STANDBY_STAGING != 'false' &&
       needs.prepare.outputs.is_deployable == 'true' &&
       needs.prepare.outputs.deploy_env == 'production' &&
       needs.build-and-push.result == 'success' &&
