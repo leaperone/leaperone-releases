@@ -1,0 +1,147 @@
+name: Nightly 2SOMEone
+run-name: >-
+  🌙 Nightly 2SOMEone · ${{ inputs.ref || 'main' }} [nightly]
+
+# Heavy 2SOMEone checks moved out of PR verification: unit and integration
+# tests, workspace builds and the Web image build. A scheduled agent reads the
+# latest run, reproduces failures in the 2SOMEone repository and opens fixes.
+
+on:
+  schedule:
+    - cron: '0 18 * * *' # 02:00 Asia/Shanghai
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 2SOMEone branch or full commit SHA (default main)
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-twosomeone
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Resolve source commit
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          REF: ${{ inputs.ref || 'main' }}
+        run: |
+          sha=$(gh api "repos/leaperone/2SOMEone/commits/$REF" --jq .sha)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve $REF"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Source: \`leaperone/2SOMEone@$sha\` [src=$sha]" >> "$GITHUB_STEP_SUMMARY"
+
+  tests:
+    needs: prepare
+    name: tests (${{ matrix.group }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: web
+            commands: |
+              pnpm --filter 2someone-web test:unit
+              ops/test-db/run.sh pnpm --filter 2someone-web test:integration
+              pnpm --filter 2someone-web lint:time-contract
+          - group: backend
+            commands: |
+              pnpm --filter @2someone/backend test:unit
+              ops/test-db/run.sh pnpm --filter @2someone/backend test:integration
+          - group: clients
+            commands: |
+              pnpm --filter twosomeone-mobile test
+              pnpm --filter @2someone/cli test
+              pnpm --filter @2someone/bot-sdk test
+              pnpm --filter 2someone-desktop build:tsc
+              pnpm --filter 2someone-desktop test
+              pnpm turbo run build --filter='!2someone-desktop' --filter='!2someone-web'
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      HUSKY: "0"
+      TURBO_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/2SOMEone
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@11.5.2 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Run every command so one failure does not hide the next; each failure gets an annotation.
+      - name: Run ${{ matrix.group }} suites
+        env:
+          COMMANDS: ${{ matrix.commands }}
+        run: |
+          status=0
+          while IFS= read -r cmd; do
+            [ -n "$cmd" ] || continue
+            echo "::group::$cmd"
+            if bash -c "$cmd"; then result=pass; else result=fail; status=1; echo "::error title=nightly ${{ matrix.group }}::$cmd"; fi
+            echo "::endgroup::"
+            echo "- $result: \`$cmd\`" >> "$GITHUB_STEP_SUMMARY"
+          done <<< "$COMMANDS"
+          exit "$status"
+
+  web-image:
+    needs: prepare
+    # Same opt-in PVE runner as the deploy build, where BuildKit cache stays warm.
+    runs-on: ${{ (vars.TWOSOMEONE_VERIFY_ON_PVE == 'true') && fromJSON('["self-hosted","Linux","X64","pve-build"]') || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          token: ${{ secrets.ACCESS_TOKEN }}
+          repository: leaperone/2SOMEone
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: ${{ runner.environment == 'self-hosted' && 'docker' || 'docker-container' }}
+          driver-opts: ${{ runner.environment != 'self-hosted' && 'image=moby/buildkit:v0.31.2' || '' }}
+
+      - name: Build (non-deployable verification)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: apps/web/docker/Dockerfile
+          target: final
+          push: false
+          load: false
+          tags: 2someren:web-nightly-verify
+          cache-from: ${{ runner.environment != 'self-hosted' && 'type=gha,scope=web-twosomeone-nightly' || '' }}
+          cache-to: ${{ runner.environment != 'self-hosted' && 'type=gha,scope=web-twosomeone-nightly,mode=max,ignore-error=true' || '' }}
+          build-args: |
+            NEXT_PUBLIC_POSTHOG_KEY=${{ vars.POSTHOG_2SOMEONE_PROJECT_TOKEN }}
+            NEXT_PUBLIC_POSTHOG_HOST=https://t.2some.one
+            NEXT_PUBLIC_SENTRY_DSN=${{ vars.TWOSOMEONE_SENTRY_DSN }}
+            SENTRY_URL=${{ secrets.SENTRY_INTERNAL_URL }}
+            SENTRY_ORG=leaperone
+            SENTRY_PROJECT=2someone-web
+            SENTRY_ENVIRONMENT=beta
+          secrets: |
+            next_server_actions_encryption_key=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
