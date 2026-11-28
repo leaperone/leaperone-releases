@@ -224,9 +224,12 @@ jobs:
 
   build-and-push:
     needs: prepare
+    # Beta deploys are paused while TWOSOMEONE_BETA_DEPLOY=false; jobs that need
+    # the build (migrate, source maps, overseas beta) are skipped with it.
     if: >-
       needs.prepare.outputs.is_deployable == 'true' &&
-      !contains(github.event.client_payload.message || '', 'noci')
+      !contains(github.event.client_payload.message || '', 'noci') &&
+      (needs.prepare.outputs.deploy_env != 'beta' || vars.TWOSOMEONE_BETA_DEPLOY != 'false')
     # Production web builds may run on the PVE build runner (repository variable
     # TWOSOMEONE_WEB_BUILD_ON_PVE=true). Beta and fallback builds stay GitHub-hosted.
     runs-on: ${{ (needs.prepare.outputs.deploy_env == 'production' && vars.TWOSOMEONE_WEB_BUILD_ON_PVE == 'true') && fromJSON('["self-hosted","Linux","X64","pve-build"]') || 'ubuntu-latest' }}
